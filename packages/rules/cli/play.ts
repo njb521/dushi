@@ -115,9 +115,9 @@ function showHints(): void {
 if (state.phase === 'declaring') {
   if (state.soloSeat === mySeat) {
     console.log(`\n你是独食者（手里有 ♠3 和 ♠A），一人打三家。`);
-    console.log('  n = 不表态（正常打，必须头游才算赢）');
-    console.log('  b = 摆牌（手牌全部公开，分数翻倍，同样必须头游）');
-    console.log('  s = 投降（-3 分，三家各 +1）');
+    console.log('  n = 不表态（正常打：头游 +12 / 二游 -6 / 三四游 -12）');
+    console.log('  b = 摆牌（手牌全部公开，分数翻倍：头游 +24，二游 -12，三四游 -24）');
+    console.log('  s = 投降（-12 分，三家各 +4）');
     for (;;) {
       const a = (await ask('选择 n/b/s > '))?.toLowerCase();
       if (a === null) quit();

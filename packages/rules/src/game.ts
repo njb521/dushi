@@ -27,6 +27,11 @@ export interface SeatState {
   place: number | null;
   /** 身份是否已公开（打出过 ♠3 或 ♠A） */
   revealed: boolean;
+  /**
+   * 是否是"出完手牌的那一手带着身份牌"（♠3 / ♠A）。
+   * 规则：这种打法直接判最后一名，无论他是独食者还是队伍里的人 —— 见 §2.15。
+   */
+  identityLast: boolean;
 }
 
 export interface GameState {
@@ -83,6 +88,7 @@ export function createGame(
     hand: sortHand(cards.slice(id * 13, (id + 1) * 13)),
     place: null,
     revealed: false,
+    identityLast: false,
   }));
 
   const state: GameState = {
@@ -257,7 +263,31 @@ function finish(state: GameState): void {
     s.place = state.places.length + 1;
     state.places.push(s.id);
   }
+  applyIdentityPenalty(state);
   state.phase = 'settling';
+}
+
+const isIdentityCard = (c: Card): boolean => c.s === 'S' && (c.r === '3' || c.r === 'A');
+
+/**
+ * 身份牌留到最后 → 判最后一名（规则 §2.15）。
+ *
+ * 这条规则的用意：♠3/♠A 本来是"暗队友"的凭据，谁把它捂到最后一张才甩出来，
+ * 就等于把牌桌当成了信息战 —— 而且往往还能靠它（♠3 是最大的单张）抢到出完。
+ * 所以不管他是独食者还是队伍里的人，出完的那一手带身份牌，一律挪到末位。
+ *
+ * 多个玩家同时犯：按他们**出完的先后**占住末尾几个名次，先出完的排前面。
+ * 这样 places 永远是 1..4 的排列，计分不会因此错位。
+ */
+function applyIdentityPenalty(state: GameState): void {
+  const offenders = state.places.filter((id) => state.seats[id].identityLast);
+  if (offenders.length === 0) return;
+  const clean = state.places.filter((id) => !state.seats[id].identityLast);
+  state.places = [...clean, ...offenders];
+  state.places.forEach((id, i) => {
+    state.seats[id].place = i + 1;
+  });
+  state.log.push(`身份牌留到最后：${offenders.map((id) => state.seats[id].name).join('、')} 判最后一名`);
 }
 
 export function play(state: GameState, seat: number, cards: readonly Card[]): Pattern {
@@ -282,9 +312,15 @@ export function play(state: GameState, seat: number, cards: readonly Card[]): Pa
   state.log.push(`${me.name} 出 ${cards.map(cardLabel).join(' ')}（${patternName(pattern)}）`);
 
   if (me.hand.length === 0) {
+    // 出完的这一手带身份牌 → 结算时判最后一名（§2.15）
+    me.identityLast = cards.some(isIdentityCard);
     me.place = state.places.length + 1;
     state.places.push(seat);
-    state.log.push(`${me.name} 出完，${PLACE_NAMES[me.place]}`);
+    state.log.push(
+      me.identityLast
+        ? `${me.name} 出完，但身份牌留到最后 —— 判最后一名`
+        : `${me.name} 出完，${PLACE_NAMES[me.place]}`,
+    );
   }
 
   if (isOver(state)) {
@@ -317,26 +353,37 @@ export interface SettleResult {
   baiPai: boolean;
 }
 
+/**
+ * 独食者按名次的基础分（v0.3 定稿）。
+ *
+ *   头游 +12（三家各 −4）
+ *   二游  −6（三家各 +2）
+ *   三游 −12（三家各 +4）
+ *   四游 −12（三家各 +4）
+ *
+ * 只有头游是正值，所以"独食必须头游才算赢"在新表下自动成立。
+ * 全部零和：独食者的分由另外三家均摊。摆牌时再乘 baiPaiMultiplier。
+ */
+export const SOLO_SCORES: Record<number, number> = { 1: 12, 2: -6, 3: -12, 4: -12 };
+
 /** 结算（纯函数，不修改 state.scores） */
 export function settle(state: GameState): SettleResult {
   const deltas = [0, 0, 0, 0];
   let reason = '';
 
   if (state.surrendered) {
+    // 投降按四游算（不是便宜认输）：想认输也得付同样的代价
     const solo = state.soloSeat!;
-    deltas[solo] = -3;
-    for (let i = 0; i < 4; i++) if (i !== solo) deltas[i] = 1;
+    deltas[solo] = SOLO_SCORES[4];
+    for (let i = 0; i < 4; i++) if (i !== solo) deltas[i] = -SOLO_SCORES[4] / 3;
     reason = '独食者投降';
   } else if (state.soloSeat !== null) {
     const solo = state.soloSeat;
     const p = state.seats[solo].place ?? 4;
-    let v = [0, 6, -3, -6, -9][p];
-    if (state.baiPai) {
-      v = p === 1 ? 6 * state.rules.baiPaiMultiplier : -6 * state.rules.baiPaiMultiplier;
-      reason = `摆牌独食${PLACE_NAMES[p]}`;
-    } else {
-      reason = `独食${PLACE_NAMES[p]}`;
-    }
+    // 摆牌 = 该名次分数 × 倍数。二游本来就是负分，所以"摆牌必须头游"自动成立
+    const base = SOLO_SCORES[p] ?? SOLO_SCORES[4];
+    const v = state.baiPai ? base * state.rules.baiPaiMultiplier : base;
+    reason = state.baiPai ? `摆牌独食${PLACE_NAMES[p]}` : `独食${PLACE_NAMES[p]}`;
     deltas[solo] = v;
     const each = -v / 3;
     for (let i = 0; i < 4; i++) if (i !== solo) deltas[i] = each;
@@ -350,7 +397,7 @@ export function settle(state: GameState): SettleResult {
         : team[0]
       : [0, 1, 2, 3].find((id) => !team.includes(id) && id !== winner)!;
     const matePlace = state.seats[mateId].place ?? 4;
-    const v = matePlace === 2 ? 2 : matePlace === 3 ? 1 : 0;
+    const v = matePlace === 2 ? 4 : matePlace === 3 ? 2 : 0;
     const winTeam = onTeam ? [...team] : [0, 1, 2, 3].filter((i) => !team.includes(i));
     for (const id of winTeam) deltas[id] = v;
     for (const id of [0, 1, 2, 3].filter((i) => !winTeam.includes(i))) deltas[id] = -v;

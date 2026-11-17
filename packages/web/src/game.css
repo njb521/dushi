@@ -85,6 +85,12 @@ input[aria-invalid="true"] { border-color: rgba(217, 67, 60, 0.8); }
 .me-career { margin-left: auto; }
 .me-career b { color: var(--gold); font-size: 15px; }
 
+.opt-row {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12px; color: var(--dim); padding: 0 4px; cursor: pointer;
+}
+.opt-row input { width: 16px; height: 16px; padding: 0; accent-color: var(--gold); flex: 0 0 auto; }
+
 /* ── 牌桌 ─────────────────────────────── */
 .table { height: 100%; display: flex; flex-direction: column; padding: env(safe-area-inset-top) 10px env(safe-area-inset-bottom); max-width: 860px; margin: 0 auto; }
 
@@ -124,6 +130,7 @@ input[aria-invalid="true"] { border-color: rgba(217, 67, 60, 0.8); }
 
 .tag { font-style: normal; font-size: 10px; padding: 2px 6px; border-radius: 8px; background: var(--red); color: #fff; margin-left: 4px; }
 .tag.turn { background: var(--gold); color: #3a2b00; }
+.tag.warn { background: rgba(255, 157, 151, 0.22); color: #ff9d97; margin-left: 6px; }
 
 .center { flex: 1; display: grid; place-items: center; min-height: 96px; }
 .trick { text-align: center; }

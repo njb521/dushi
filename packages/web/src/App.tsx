@@ -62,6 +62,8 @@ function Lobby({ me, onMe }: { me: Me; onMe: (m: Me | null) => void }): ReactEle
   const [toast, setToast] = useState('');
   const [connError, setConnError] = useState('');
   const [reconnecting, setReconnecting] = useState(false);
+  /** 建房时要不要"人不够用 AI 补位" */
+  const [aiFill, setAiFill] = useState(stored('dushi.aifill', false));
   const roomRef = useRef<Room | null>(null);
   const settledRound = useRef(0);
   const restored = useRef(false);
@@ -70,6 +72,10 @@ function Lobby({ me, onMe }: { me: Me; onMe: (m: Me | null) => void }): ReactEle
     setToast(msg);
     setTimeout(() => setToast(''), 3500);
   };
+
+  useEffect(() => {
+    localStorage.setItem('dushi.aifill', JSON.stringify(aiFill));
+  }, [aiFill]);
 
   /** 断线后自动重连：6 次退避，最多约 12 秒；服务端座位只保留 60 秒，够用 */
   const autoReconnect = async (room: Room): Promise<void> => {
@@ -134,12 +140,17 @@ function Lobby({ me, onMe }: { me: Me; onMe: (m: Me | null) => void }): ReactEle
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const connect = async (roomCode: string, solo = false): Promise<void> => {
+  const connect = async (roomCode: string, opts: { solo?: boolean } = {}): Promise<void> => {
     setConnError('');
     try {
       const client = new Client(endpoint());
       // 登录态走 WS 握手携带的 httpOnly cookie，这里不需要（也不该）传 token
-      const room = await client.joinOrCreate('dushi', { code: roomCode, solo });
+      const solo = opts.solo === true;
+      const room = await client.joinOrCreate('dushi', {
+        code: roomCode,
+        solo,
+        aiFill: !solo && aiFill,
+      });
       bind(room);
       localStorage.setItem('dushi.code', JSON.stringify(roomCode));
       setCode(roomCode);
@@ -214,7 +225,11 @@ function Lobby({ me, onMe }: { me: Me; onMe: (m: Me | null) => void }): ReactEle
           <button className="primary" onClick={() => void connect(randomCode())}>
             创建房间（联机）
           </button>
-          <button onClick={() => void connect(randomCode(), true)}>单人练习 · 打 3 个 AI</button>
+          <label className="opt-row">
+            <input type="checkbox" checked={aiFill} onChange={(e) => setAiFill(e.target.checked)} />
+            <span>人不够时让 AI 补位（有空位就能开打）</span>
+          </label>
+          <button onClick={() => void connect(randomCode(), { solo: true })}>单人练习 · 打 3 个 AI</button>
           <div className="join-row">
             <input
               placeholder="6 位房号"
@@ -239,7 +254,8 @@ function Lobby({ me, onMe }: { me: Me; onMe: (m: Me | null) => void }): ReactEle
 同花只比花色（♠>♥>♣>♦，同花色压不动）
 五张跨型: 顺<同花<三带二<四带一<同花顺
 报单（剩1张）能压必须压
-♠3+♠A 同持=独食(1v3)，必须头游才赢`}</pre>
+身份牌（♠3/♠A）留到最后一张出 → 判最后一名
+♠3+♠A 同持=独食(1v3)；头游+12 二游-6 三四游-12`}</pre>
           </details>
         </div>
       </div>
@@ -367,6 +383,7 @@ function Game({
         <span>
           房号 <b>{view.roomCode}</b>
           {view.practice && <em className="tag practice">练习</em>}
+          {view.hasAi && !view.practice && <em className="tag practice">有 AI</em>}
         </span>
         <span className="round">{view.round > 0 ? `第 ${view.round} 局` : '等待玩家'}</span>
         <button className="ghost" onClick={() => setLogOpen((o) => !o)}>
@@ -455,12 +472,12 @@ function Game({
         <div className="modal">
           <div className="modal-box">
             <h3>你是独食者</h3>
-            <p>♠3 和 ♠A 都在你手里，一人打三家。必须头游才算赢。如何开始？</p>
+            <p>♠3 和 ♠A 都在你手里，一人打三家。头游 +12、二游 −6、三四游 −12、投降 −12。如何开始？</p>
             <button className="primary" onClick={() => submitDeclare('none')}>
               不表态（暗打）
             </button>
             <button onClick={() => submitDeclare('baiPai')}>摆牌（分数翻倍）</button>
-            <button onClick={() => submitDeclare('surrender')}>投降（−3）</button>
+            <button onClick={() => submitDeclare('surrender')}>投降（−12）</button>
           </div>
         </div>
       )}
@@ -482,7 +499,10 @@ function Game({
                   const careerDelta = view.careerDelta[s.seat] ?? 0;
                   return (
                     <tr key={s.seat}>
-                      <td>{s.name}</td>
+                      <td>
+                        {s.name}
+                        {s.identityLast && <em className="tag warn">身份牌留手</em>}
+                      </td>
                       <td>{PLACE_NAMES[s.place ?? 0] ?? ''}</td>
                       <td className={delta >= 0 ? 'plus' : 'minus'}>
                         {delta > 0 ? `+${delta}` : delta === 0 ? '±0' : delta}
@@ -505,7 +525,9 @@ function Game({
             {view.settle.soloSeat !== null && (
               <p className="dim">独食者：{view.seats[view.settle.soloSeat].name}</p>
             )}
-            {view.practice && <p className="dim">练习局 · 不计生涯分</p>}
+            {(view.practice || view.hasAi) && (
+              <p className="dim">{view.practice ? '练习局' : '本局有 AI 补位'} · 不计生涯分</p>
+            )}
             {view.you === 0 && view.round < 8 && (
               <button className="primary" onClick={() => send('nextRound')}>
                 开始下一局
@@ -517,13 +539,38 @@ function Game({
         </div>
       )}
 
-      {view.phase === 'waiting' && view.seats.some((s) => !s.connected) === false && (
+      {view.phase === 'waiting' && (
         <div className="modal">
           <div className="modal-box">
-            <h3>人齐了</h3>
-            <button className="primary" onClick={() => send('ready', { ready: true })}>
-              准备开局
-            </button>
+            <h3>{view.emptySeats > 0 ? `还差 ${view.emptySeats} 人` : '人齐了'}</h3>
+            <p className="dim">
+              已到 {4 - view.emptySeats}/4：
+              {view.seats
+                .filter((s) => s.name !== '空位')
+                .map((s) => s.name)
+                .join('、')}
+            </p>
+
+            {view.emptySeats === 0 ? (
+              <button className="primary" onClick={() => send('ready', { ready: true })}>
+                准备开局
+              </button>
+            ) : view.aiFill ? (
+              view.you === 0 ? (
+                <>
+                  <button className="primary" onClick={() => send('fillAi')}>
+                    AI 补位开局（补 {view.emptySeats} 个）
+                  </button>
+                  <p className="dim">也可以继续等人，人来齐了点"准备"正常开。</p>
+                </>
+              ) : (
+                <p className="dim">等房主决定是否叫 AI 补位，或继续等人。</p>
+              )
+            ) : (
+              <p className="dim">这个房间建房时没开 AI 补位，只能等人。</p>
+            )}
+
+            <p className="hint">房号 {view.roomCode} · 发给朋友就能进</p>
           </div>
         </div>
       )}

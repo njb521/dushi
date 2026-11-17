@@ -20,6 +20,8 @@ export interface SeatView {
   career: number | null;
   /** 单人模式里的 AI 对手 */
   bot: boolean;
+  /** 出完时身份牌留到最后（判最后一名） */
+  identityLast: boolean;
 }
 
 export interface SettleInfo {
@@ -51,8 +53,14 @@ export interface View {
   settle: SettleInfo | null;
   eventLog: string[];
   rulesNote: string;
-  /** 单人练习房：不计生涯分 */
+  /** 单人练习房 */
   practice: boolean;
+  /** 本局有 AI 参与（不计生涯分） */
+  hasAi: boolean;
+  /** 建房时开了 AI 补位 */
+  aiFill: boolean;
+  /** 还空着几个座位（AI 坐的不算） */
+  emptySeats: number;
 }
 
 export const SUIT_CHAR: Record<Suit, string> = { S: '♠', H: '♥', C: '♣', D: '♦' };

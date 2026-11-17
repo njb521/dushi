@@ -23,6 +23,8 @@ export interface SeatView {
   readonly career: number | null;
   /** 单人模式里的 AI 对手 */
   readonly bot: boolean;
+  /** 出完时把身份牌留在最后 → 判最后一名 */
+  readonly identityLast: boolean;
 }
 
 export type Phase = 'waiting' | 'playing' | 'declaring' | 'settling';
@@ -61,8 +63,14 @@ export interface View {
   };
   readonly eventLog: readonly string[];
   readonly rulesNote: string;
-  /** 单人练习房：不计生涯分 */
+  /** 单人练习房 */
   readonly practice: boolean;
+  /** 本局有 AI 参与（因此不计生涯分） */
+  readonly hasAi: boolean;
+  /** 建房时开了 AI 补位（房主可点「AI 补位开局」） */
+  readonly aiFill: boolean;
+  /** 还空着几个座位（AI 坐的不算） */
+  readonly emptySeats: number;
 }
 
 export function buildView(g: GameRuntime, seat: number): View {
@@ -82,6 +90,7 @@ export function buildView(g: GameRuntime, seat: number): View {
         place: s.place,
         career: g.careerAt(s.id),
         bot: g.isBot(s.id),
+        identityLast: s.identityLast,
       }))
     : // 等待阶段还没有牌局：空座位就是没人坐，给 0 张而不是假装 13 张
       g.clientSlots().map((_c, id) => ({
@@ -94,6 +103,7 @@ export function buildView(g: GameRuntime, seat: number): View {
         place: null,
         career: g.careerAt(id),
         bot: g.isBot(id),
+        identityLast: false,
       }));
 
   const showHand = phase !== 'waiting';
@@ -143,5 +153,8 @@ export function buildView(g: GameRuntime, seat: number): View {
     eventLog: st ? st.log.slice(-12) : [],
     rulesNote: g.rulesNote(),
     practice: g.practice,
+    hasAi: g.roundHasAi(),
+    aiFill: g.aiFill,
+    emptySeats: g.emptySeats(),
   };
 }

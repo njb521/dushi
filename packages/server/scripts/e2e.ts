@@ -36,6 +36,9 @@ interface View {
   scores: number[];
   careerDelta: number[];
   practice: boolean;
+  hasAi: boolean;
+  aiFill: boolean;
+  emptySeats: number;
   seats: { seat: number; name: string; career: number | null; bot: boolean; connected: boolean }[];
   settle: null | { reason: string; deltas: number[]; places: number[] };
   eventLog: string[];
@@ -121,6 +124,50 @@ async function careerOf(token: string): Promise<{ totalScore: number; games: num
   if (!res.ok) throw new Error(`/api/me 失败 ${res.status}`);
   const body = (await res.json()) as { stats: { totalScore: number; games: number; wins: number } };
   return body.stats;
+}
+
+/**
+ * 一个人把一局打完（其余座位是 AI）：只按视图行事，等价于真人操作。
+ * 单人练习和"AI 补位"两条路径都用它，省得写两套一模一样的策略。
+ */
+async function driveAlone(room: any, seedView: View | null, what: string): Promise<View> {
+  let latest: View | null = seedView;
+  let settled: View | null = null;
+  room.onMessage('view', (v: View) => {
+    latest = v;
+    if (v.settle) settled = v;
+  });
+  room.send('ready', { ready: true });
+
+  let sig = '';
+  // 一局大约 50 手，AI 0.8 秒一手 → 40 秒上下，给足余量避免慢机器上误判
+  const deadline = Date.now() + 120_000;
+  while (!settled && Date.now() < deadline) {
+    await sleep(200);
+    const v = latest;
+    if (!v) continue;
+    if (v.phase === 'declaring') {
+      if (v.declareAsk) room.send('declare', { choice: 'none' });
+      continue;
+    }
+    if (v.phase !== 'playing' || v.turn !== v.you) continue;
+    const hand = v.yourHand ?? [];
+    if (hand.length === 0) continue;
+    const s = `${v.trick ? v.trick.cards.map(label).join(',') : 'lead'}|${hand.length}`;
+    if (s === sig) continue;
+    sig = s;
+    if (!v.trick) room.send('play', { cards: [label(smallest(hand))] });
+    else if (v.trick.cards.length === 1) {
+      const beat = smallest(hand.filter((c) => power(c) > power(v.trick!.cards[0])));
+      if (beat) room.send('play', { cards: [label(beat)] });
+      else room.send('pass', {});
+    } else room.send('pass', {});
+  }
+  if (!settled) {
+    const v = latest as View | null;
+    throw new Error(`${what} 120 秒内没打完：phase=${v?.phase} turn=${v?.turn} 手牌=${v?.yourHand?.length}`);
+  }
+  return settled as View;
 }
 
 async function main(): Promise<void> {
@@ -403,41 +450,16 @@ async function main(): Promise<void> {
   console.log(`✓ 单人房就绪：3 个 AI（${bots.map((s) => s.name).join('、')}）`);
 
   const careerBeforeSolo = await careerOf(accounts[0].token);
-  let soloLatest: View | null = firstSolo;
-  let soloSettled: View | null = null;
-  soloRoom.onMessage('view', (v: View) => {
-    soloLatest = v;
-    if (v.settle) soloSettled = v;
-  });
-  soloRoom.send('ready', { ready: true });
-
-  let soloSig = '';
-  const soloDeadline = Date.now() + 60_000;
-  while (!soloSettled && Date.now() < soloDeadline) {
-    await sleep(200);
-    const v = soloLatest;
-    if (!v) continue;
-    if (v.phase === 'declaring') {
-      if (v.declareAsk) soloRoom.send('declare', { choice: 'none' });
-      continue;
-    }
-    if (v.phase !== 'playing' || v.turn !== v.you) continue;
-    const hand = v.yourHand ?? [];
-    if (hand.length === 0) continue;
-    const sig = `${v.trick ? v.trick.cards.map(label).join(',') : 'lead'}|${hand.length}`;
-    if (sig === soloSig) continue;
-    soloSig = sig;
-    if (!v.trick) soloRoom.send('play', { cards: [label(smallest(hand))] });
-    else if (v.trick.cards.length === 1) {
-      const beat = smallest(hand.filter((c) => power(c) > power(v.trick!.cards[0])));
-      if (beat) soloRoom.send('play', { cards: [label(beat)] });
-      else soloRoom.send('pass', {});
-    } else soloRoom.send('pass', {});
+  let soloSettled: View;
+  try {
+    soloSettled = await driveAlone(soloRoom, firstSolo, '单人局');
+  } catch (e) {
+    await fail((e as Error).message);
+    throw e;
   }
-  if (!soloSettled) await fail('单人局 60 秒内没打完（AI 可能没自动出牌）');
-  const aiPlayed = (soloSettled as View).eventLog.some((l) => l.includes('🤖'));
+  const aiPlayed = soloSettled.eventLog.some((l) => l.includes('🤖'));
   if (!aiPlayed) await fail('AI 没有出过牌');
-  console.log(`✓ 单人局打完：AI 正常出牌，deltas=${JSON.stringify((soloSettled as View).settle!.deltas)}`);
+  console.log(`✓ 单人局打完：AI 正常出牌，deltas=${JSON.stringify(soloSettled.settle!.deltas)}`);
 
   const careerAfterSolo = await careerOf(accounts[0].token);
   if (careerAfterSolo.totalScore !== careerBeforeSolo.totalScore || careerAfterSolo.games !== careerBeforeSolo.games) {
@@ -447,6 +469,73 @@ async function main(): Promise<void> {
   }
   console.log('✓ 练习局不计生涯分');
   soloRoom.leave();
+
+  // ── AI 补位：建房时开 aiFill，房主点一下把空位补成 AI 并直接开局 ──
+  const fillCode = String(400_000 + Math.floor(Math.random() * 500_000));
+  const fillClient = new Client(`ws://127.0.0.1:${PORT}`);
+  const fillRoom = await fillClient.joinOrCreate('dushi', {
+    code: fillCode,
+    token: accounts[1].token,
+    aiFill: true,
+  });
+  let latestFill = await new Promise<View>((resolve) => {
+    fillRoom.onMessage('view', (v: View) => resolve(v));
+  });
+  fillRoom.onMessage('view', (v: View) => {
+    latestFill = v;
+  });
+  if (!latestFill.aiFill || latestFill.emptySeats !== 3 || latestFill.seats.some((s) => s.bot)) {
+    await fail(
+      `AI 补位房初始状态不对：aiFill=${latestFill.aiFill} 空位=${latestFill.emptySeats} 现有AI=${latestFill.seats.filter((s) => s.bot).length}`,
+    );
+  }
+  console.log('✓ AI 补位房就绪：只有房主 1 人，3 个空位等着');
+
+  const careerBeforeFill = await careerOf(accounts[1].token);
+  fillRoom.send('fillAi');
+  await sleep(900);
+  const botNames = latestFill.seats.filter((s) => s.bot).map((s) => s.name);
+  if (botNames.length !== 3 || !latestFill.hasAi || latestFill.phase === 'waiting') {
+    await fail(`AI 补位没生效：AI=${botNames.length} hasAi=${latestFill.hasAi} phase=${latestFill.phase}`);
+  }
+  console.log(`✓ 房主一点就补位开局：${botNames.join('、')}`);
+
+  let fillSettled: View;
+  try {
+    fillSettled = await driveAlone(fillRoom, latestFill, 'AI 补位局');
+  } catch (e) {
+    await fail((e as Error).message);
+    throw e;
+  }
+  console.log(`✓ AI 补位局打完：deltas=${JSON.stringify(fillSettled.settle!.deltas)}`);
+
+  const careerAfterFill = await careerOf(accounts[1].token);
+  if (careerAfterFill.totalScore !== careerBeforeFill.totalScore || careerAfterFill.games !== careerBeforeFill.games) {
+    await fail(
+      `有 AI 的局不该动生涯分：前 ${JSON.stringify(careerBeforeFill)} → 后 ${JSON.stringify(careerAfterFill)}`,
+    );
+  }
+  console.log('✓ 有 AI 参与的局不计生涯分');
+
+  // ── 局间来人可以接管 AI 的座位（"朋友来了，替下 AI"）──
+  fillRoom.send('nextRound');
+  await sleep(600);
+  const takerRoom = await fillClient.joinOrCreate('dushi', {
+    code: fillCode,
+    token: accounts[2].token,
+    aiFill: true,
+  });
+  const takerView = await new Promise<View>((resolve) => {
+    takerRoom.onMessage('view', (v: View) => resolve(v));
+  });
+  const botsLeft = takerView.seats.filter((s) => s.bot).length;
+  const tookSeat = takerView.seats.some((s) => s.name === accounts[2].username);
+  if (botsLeft !== 2 || !tookSeat) {
+    await fail(`接管 AI 座位失败：剩 ${botsLeft} 个 AI，座位里有新人=${tookSeat}`);
+  }
+  console.log(`✓ 局间进来的朋友接管了一个 AI 座位（剩 ${botsLeft} 个 AI）`);
+  takerRoom.leave();
+  fillRoom.leave();
 
   for (const r of rooms) {
     try {

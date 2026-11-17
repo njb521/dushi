@@ -11,6 +11,7 @@ export function makeState(hands: readonly string[], opts: Partial<GameState> = {
     hand: sortHand(parseHand(h)),
     place: null,
     revealed: false,
+    identityLast: false,
   }));
   return {
     phase: 'playing',
@@ -46,6 +47,7 @@ export function makeFinished(
     hand: [],
     place: places.indexOf(id) + 1,
     revealed: false,
+    identityLast: false,
   }));
   return {
     phase: 'settling',
