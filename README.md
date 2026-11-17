@@ -1,13 +1,13 @@
 # 独食 · Dushi
 
-![status](https://img.shields.io/badge/status-M1%27%20online%20play-brightgreen)
+![status](https://img.shields.io/badge/status-M2%20accounts-brightgreen)
 ![players](https://img.shields.io/badge/players-4-orange)
 ![stack](https://img.shields.io/badge/stack-Node%20TS%20%2B%20React%20%2B%20Colyseus-61dafb)
 ![license](https://img.shields.io/badge/license-MIT-blue)
 
 > 四人联机「独食」（钦州独食 / 广西独食 / 黑一黑三）—— 斗地主的节奏 + 狼人杀的信息差 + 跑得快的牌型。
 
-**当前进度**：规则引擎（M0）与**最小可联机版**（M1'）已完成 —— 4 台设备打开浏览器进同一个房号，就能打完一整场。见 [和朋友开打](#和朋友开打) 与 [路线图](#路线图)。
+**当前进度**：规则引擎（M0）· 最小可联机版（M1'）· **账号体系（M2）** 已完成 —— 4 台设备注册登录后进同一个房号，打完的分数会算进各自账号的生涯分，换设备也不丢。见 [和朋友开打](#和朋友开打) 与 [路线图](#路线图)。
 
 ![界面原型](assets/preview.svg)
 <sub>界面原型（M1' 已实现的功能布局）</sub>
@@ -22,16 +22,32 @@ npm run build        # 构建前端
 npm start            # 起服务，输出局域网地址，如 http://192.168.x.x:3000
 ```
 
-把局域网地址发到朋友群里 → 各自手机浏览器打开 → 你点**创建房间**（得到 6 位房号），其他人输入房号加入 → 4 人点准备，开局。
+把局域网地址发到朋友群里 → 各自手机浏览器打开 → **注册/登录**（用户名 + 密码，不要手机号邮箱）→ 你点**创建房间**（得到 6 位房号），其他人输入房号加入 → 4 人点准备，开局。
 
-> ⚠️ 需要 4 台设备/4 个人，同一 WiFi 即可；目前还没做账号登录，刷新页面 = 重新入房。公网部署（frp + HTTPS）见设计文档 §5.4。
+每局结算后分数会立刻写进数据库，座位卡片和结算弹窗都会显示**生涯分**（跨房间、跨设备累计）。
+
+> ⚠️ 需要 4 台设备/4 个人，同一 WiFi 即可。账号库是服务端本地文件 `data/dushi.db`，备份它 = 备份所有人的生涯分。公网部署（frp + HTTPS）见设计文档 §5.4。
+
+### 账号相关的日常操作
+
+```bash
+npm run reset-password -- 阿良 新密码      # 忘记了密码？房主本地重置（没有邮箱找回）
+```
+
+| 项目 | 位置 / 口径 |
+|---|---|
+| 账号库 | `data/dushi.db`（SQLite，首次启动自动建表） |
+| 会话密钥 | `data/jwt.key`（首次启动自动生成；也可用 `DUSHI_JWT_SECRET` 覆盖） |
+| 登录态 | JWT 7 天，httpOnly cookie，改密码后旧登录态立刻失效 |
+| 生涯分 | `user_stats.total_score`，每局结算累加，永久 |
+
 
 ## 命令行试玩（不需要装任何依赖）
 
 ```bash
 npm run play            # Node ≥22.6 原生跑 .ts：你和 3 个 AI 打一把
-npm test                # 33 个规则引擎测试
-npm run e2e             # 端到端：4 个程序化客户端联机打完整一局 + 手牌泄露审计
+npm test                # 47 个测试（规则引擎 33 + 账号/数据层 14）
+npm run e2e             # 端到端：注册 4 个账号 → 联机打完整一局 → 校验生涯分入库
 ```
 
 `npm run play` 大概长这样：
@@ -107,9 +123,12 @@ npm run e2e             # 端到端：4 个程序化客户端联机打完整一�
 
 | 项目 | 结果 |
 |---|---|
-| 单元测试 | **33 个全绿**（牌型 9 / 比较 7 / 出牌 6 / 对局结算 10 / 随机对局 1） |
+| 单元测试 | **47 个全绿**（规则引擎 33：牌型 9 / 比较 7 / 出牌 6 / 对局结算 10 / 随机对局 1；账号与数据层 14：密码、JWT、限流、cookie、生涯分累加） |
 | 随机对局 | CI 跑 1000 局，压测跑 **20 000 局**，全部通过不变量检查 |
-| 端到端联机 | **4 个真客户端经 WebSocket 打完一整局**，约 300 个视图推送，零卡死、零非法出牌 |
+| 端到端联机 | **注册 4 个账号 → 4 个真客户端经 WebSocket 打完一整局**，约 300 个视图推送，零卡死、零非法出牌 |
+| 鉴权 | 未登录进房被拒（401）；不带 cookie 的 `joinOrCreate` 拿不到座位 |
+| 房号隔离 | 两个不同房号落在两个独立房间（`filterBy(['code'])`，有 E2E 回归用例） |
+| 生涯分 | 一局打完后 `/api/me` 的总分等于该座位本局 delta，局数 +1 |
 | 手牌泄露审计 | E2E 按三条信息论准则审计全部视图：一张牌不跨两双手、打出的牌不回购、非牌面字段无牌码 —— **全部通过** |
 | 独食局占比 | **23.51%**（理论值 12/51 = 23.53%，发牌正确） |
 | 结算零和 | 所有名次 × 队伍 × 摆牌组合，合计恒为 0 |
@@ -124,10 +143,18 @@ npm run e2e             # 端到端：4 个程序化客户端联机打完整一�
 │   ├── src/  (cards / pattern / plays / game / rules / ai / sim)
 │   ├── test/  (33 个测试)
 │   └── cli/   (play.ts 人机对战 · sim.ts 压测)
-├── packages/server/           # Colyseus 房间 + 视图安全 + 断线托管 + 静态服务
-│   ├── src/   (room.ts · views.ts · index.ts)
-│   └── scripts/e2e.ts         # 端到端联机测试 + 手牌泄露审计
-├── packages/web/              # React 客户端（大厅 + 牌桌 + 提示 + 结算）
+├── packages/server/           # Colyseus 房间 + 鉴权 + 视图安全 + 静态服务
+│   ├── src/
+│   │   ├── room.ts            # 房间、座位、断线托管、结算入库
+│   │   ├── views.ts           # 每座位可见视图（信息隔离的唯一出口）
+│   │   ├── api.ts             # /api 账号接口（注册/登录/改密/生涯分）
+│   │   ├── db.ts              # SQLite：users / matches / match_players / user_stats
+│   │   ├── auth/              # password(scrypt) · jwt(HS256) · limiter · session
+│   │   └── index.ts           # 单端口：/api + WebSocket + 静态文件
+│   ├── test/auth.test.ts      # 账号与数据层单测（14 个）
+│   └── scripts/               # e2e.ts 端到端 · reset-password.ts 重置密码
+├── packages/web/              # React 客户端（登录 → 大厅 → 牌桌 → 结算）
+├── data/                      # 运行时数据：dushi.db / jwt.key（已 gitignore）
 ├── 独食-详细设计文档-v0.2.md   # 主文档：规则、架构、协议、里程碑
 ├── 独食-规则速查卡.md           # 一页规则，可以直接发给朋友
 ├── 独食-详细设计文档-v0.1.md   # 历史版本（顺子范围与计分规则已变更）
@@ -143,7 +170,9 @@ npm run e2e             # 端到端：4 个程序化客户端联机打完整一�
 - [x] **M1'** 最小可联机版（按"跳过热座"决策执行）：
       房号建房/加入 · 服务端权威裁判 · 视图级信息隔离 · 独食宣告弹窗 ·
       结算 · 8 局赛制 · 断线托管 · 出牌提示 · 手机优先 UI
-- [ ] **M2** 账号体系（注册 / 登录 / 跨设备生涯分）
+- [x] **M2** 账号体系：注册/登录（scrypt + JWT httpOnly cookie）· 登录限流 ·
+      入房鉴权 · 每局结算写 `match_players` 并累加生涯分 · 座位/结算展示生涯分 ·
+      改密码使其旧会话失效 · 本地重置密码脚本
 - [ ] **M3** 断线重连（身份凭证 + 座位恢复）与超时接管完善
 - [ ] **M4** 战绩页、赛制自定义面板
 - [ ] **M5** 新手引导、音效动画、真实截图
@@ -165,12 +194,12 @@ npm run e2e             # 端到端：4 个程序化客户端联机打完整一�
 |---|---|---|
 | 规则引擎 | TypeScript（零依赖） | Node 原生跑 `.ts`，可直接复用 |
 | 前端 | React 18 + TypeScript + Vite | |
-| 状态 | Zustand | 回合制够用 |
-| 样式 / 动画 | Tailwind CSS + framer-motion | |
-| 牌面 | 纯 CSS / SVG 自绘 | 零素材版权风险 |
-| 服务端 | Node 20 + TypeScript + [Colyseus](https://colyseus.io/) | 房间、增量同步、重连开箱即用 |
-| 账号 | argon2id + JWT（httpOnly cookie） | 仅用户名 + 密码 |
-| 数据库 | SQLite（better-sqlite3） | 好友局量级，零运维 |
+| 状态 | React `useState`（无状态库） | 真值只有服务端推来的视图，本地状态不值得上库 |
+| 样式 | 手写 CSS | 无 Tailwind / UI 库，避免多一层构建与体积 |
+| 牌面 | 纯 CSS 自绘 | 零素材版权风险 |
+| 服务端 | Node ≥22.6 + TypeScript + [Colyseus](https://colyseus.io/) | 房间、断线托管、断线 4 秒 AI 接管 |
+| 账号 | **scrypt** 密码哈希 + 手写 JWT(HS256) + httpOnly cookie | 零新增依赖；scrypt 参数 N=2¹⁵ 抗 GPU |
+| 数据库 | **SQLite（Node 内置 `node:sqlite`）** | 好友局量级，零运维、免原生编译 |
 | 部署 | frp 内网穿透 + Nginx + Let's Encrypt | 服务跑本机，VPS 只做转发 |
 
 ```mermaid
@@ -186,13 +215,19 @@ flowchart LR
 ## 开发
 
 ```bash
-npm test                       # 全部测试
-node --test packages/rules/test/pattern.test.ts   # 只跑一个文件
+npm install                    # 前端与服务端依赖（规则引擎与账号层本身零依赖）
+npm test                       # 全部测试（47 个）
+npm run test:server            # 只跑账号/数据层
+node --test "packages/rules/test/pattern.test.ts"   # 只跑一个文件
 npm run play                   # 人机对战
 npm run soak -- 50000          # 5 万局压测
+npm run e2e                    # 端到端联机（自动拉一个用临时数据目录的服务）
 ```
 
-环境要求：**Node ≥ 22.6**（要用原生的 TypeScript 类型剥离）。开发时没有 `node_modules`、没有构建步骤、没有 `npm install`。
+环境要求：**Node ≥ 22.6**（要用原生的 TypeScript 类型剥离；`node:sqlite` 也是内置的）。
+`npm run play` / `npm test` 不需要 `node_modules`；联机与前端才需要 `npm install`。
+
+调试小贴士：E2E 用 `DUSHI_DATA_DIR` 指向临时目录，不会污染 `data/dushi.db`；正式服务想换库位置也用它。
 
 ## 部署
 
@@ -220,6 +255,15 @@ A：独食的阵营结构建立在 4 人 13 张上（♠3 + ♠A 分持 = 2v2，
 
 **Q：为什么一定要登录？**
 A：要跨局、跨天累计分数，就必须有稳定身份。用 localStorage 的匿名 ID 换设备或清缓存就丢了。只要求用户名 + 密码，不要手机号邮箱。
+
+**Q：密码忘了怎么办？**
+A：没有自助找回（不收手机号/邮箱，也就没法走验证码）。房主在自己电脑上跑 `npm run reset-password -- <用户名> <新密码>`，重置后旧登录态全部失效。
+
+**Q：密码是怎么存的？**
+A：scrypt（Node 内置，N=2¹⁵、r=8、p=1，每次随机盐），只存哈希不存明文；登录失败 5 次/分钟/IP 限流；会话是 httpOnly cookie，前端 JS 读不到。
+
+**Q：为什么不用 argon2id / better-sqlite3？**
+A：两者都要原生编译（Windows 上还得装 build tools），对"朋友本机跑起来"是纯摩擦。scrypt 是 OWASP 推荐的密码哈希，`node:sqlite` 是 Node 内置，功能都够这个量级用。
 
 **Q：规则和我们那儿不一样怎么办？**
 A：文档 §3 列了全部争议点。三张能否随时出、四张算不算炸弹、摆牌是否先出等做成了房主开关；顺子范围、独食胜负线、同花比较按定稿固定。

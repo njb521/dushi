@@ -11,15 +11,18 @@
     "node": ">=22.6"
   },
   "scripts": {
-    "test": "node --test packages/rules/test/",
-    "test:watch": "node --test --watch packages/rules/test/",
+    "test": "npm run test:rules && npm run test:server",
+    "test:rules": "node --test \"packages/rules/test/*.test.ts\"",
+    "test:server": "node --test \"packages/server/test/*.test.ts\"",
+    "test:watch": "node --test --watch \"packages/rules/test/*.test.ts\"",
     "play": "node packages/rules/cli/play.ts",
     "soak": "node packages/rules/cli/sim.ts",
     "build": "npm run build -w @dushi/web",
     "start": "node packages/server/src/index.ts",
     "dev:server": "npm run dev -w @dushi/server",
     "dev:web": "npm run dev -w @dushi/web",
-    "e2e": "node packages/server/scripts/e2e.ts"
+    "e2e": "node packages/server/scripts/e2e.ts",
+    "reset-password": "node packages/server/scripts/reset-password.ts"
   },
   "allowScripts": {
     "esbuild@0.25.12": true,

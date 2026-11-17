@@ -6,6 +6,9 @@ import { classify, legalPlays, sortByPower } from '@dushi/rules';
 import type { Card } from '@dushi/rules';
 import { SUIT_CHAR, isRed, cardCode, PLACE_NAMES } from './view.ts';
 import type { View, SeatView } from './view.ts';
+import { Auth } from './Auth.tsx';
+import { api } from './api.ts';
+import type { Me } from './api.ts';
 
 // ── 连接 ────────────────────────────────────────────────
 
@@ -25,16 +28,37 @@ const stored = <T,>(k: string, def: T): T => {
 };
 
 export function App(): ReactElement {
-  const [name, setName] = useState(stored('dushi.name', ''));
+  const [me, setMe] = useState<Me | null | undefined>(undefined);
+
+  useEffect(() => {
+    api
+      .me()
+      .then(setMe)
+      .catch(() => setMe(null));
+  }, []);
+
+  if (me === undefined) {
+    return (
+      <div className="lobby">
+        <div className="lobby-box">
+          <p className="dim">载入中…</p>
+        </div>
+      </div>
+    );
+  }
+  if (me === null) return <Auth onDone={setMe} />;
+  return <Lobby me={me} onMe={setMe} />;
+}
+
+// ── 大厅 ────────────────────────────────────────────────
+
+function Lobby({ me, onMe }: { me: Me; onMe: (m: Me | null) => void }): ReactElement {
   const [code, setCode] = useState(stored('dushi.code', ''));
   const [view, setView] = useState<View | null>(null);
   const [toast, setToast] = useState('');
   const [connError, setConnError] = useState('');
   const roomRef = useRef<Room | null>(null);
-
-  useEffect(() => {
-    localStorage.setItem('dushi.name', JSON.stringify(name));
-  }, [name]);
+  const settledRound = useRef(0);
 
   const flash = (msg: string): void => {
     setToast(msg);
@@ -46,24 +70,35 @@ export function App(): ReactElement {
     room.onMessage('view', (v: View) => {
       setView(v);
       setConnError('');
+      // 每局结算后回查一次生涯分（服务端是唯一真值，本地只做展示）
+      if (v.settle && v.round !== settledRound.current) {
+        settledRound.current = v.round;
+        api.me().then(onMe).catch(() => undefined);
+      }
     });
     room.onMessage('error', (e: { msg: string }) => flash(e.msg));
     room.onLeave(() => setConnError('已断开连接，刷新页面重新进房'));
     room.onError(() => setConnError('连接出错，请检查网络后刷新'));
-    if (name.trim()) room.send('setName', { name: name.trim() });
   };
 
   const connect = async (roomCode: string): Promise<void> => {
     setConnError('');
     try {
       const client = new Client(endpoint());
+      // 登录态走 WS 握手携带的 httpOnly cookie，这里不需要（也不该）传 token
       const room = await client.joinOrCreate('dushi', { code: roomCode });
       bind(room);
       localStorage.setItem('dushi.code', JSON.stringify(roomCode));
       setCode(roomCode);
     } catch (e) {
-      setConnError('连不上服务器，确认服务已启动、地址正确（同 WiFi 用局域网 IP）');
-      console.error(e);
+      const err = e as Error & { code?: number };
+      const unauth = err.code === 401 || /登录|unauthor/i.test(err.message ?? '');
+      setConnError(
+        unauth
+          ? '登录态已失效，请刷新页面重新登录'
+          : `连不上服务器（${err.code ?? '网络错误'}），确认服务已启动、地址正确（同 WiFi 用局域网 IP）`,
+      );
+      console.error('进房失败：', err.code, err.message);
     }
   };
 
@@ -86,6 +121,18 @@ export function App(): ReactElement {
     roomRef.current?.leave();
     roomRef.current = null;
     setView(null);
+    api.me().then(onMe).catch(() => undefined);
+  };
+
+  const logout = async (): Promise<void> => {
+    roomRef.current?.leave();
+    roomRef.current = null;
+    setView(null);
+    try {
+      await api.logout();
+    } finally {
+      onMe(null);
+    }
   };
 
   const send = (type: string, payload: Record<string, unknown> = {}): void => {
@@ -98,13 +145,18 @@ export function App(): ReactElement {
         <div className="lobby-box">
           <h1>独食</h1>
           <p className="lobby-sub">四人扑克 · ♠3♠A 是暗队友 · 打出才亮明</p>
-          <input
-            placeholder="昵称"
-            value={name}
-            maxLength={12}
-            onChange={(e) => setName(e.target.value)}
-          />
-          <button className="primary" onClick={createRoom} disabled={!name.trim()}>
+
+          <div className="me-bar">
+            <span className="me-name">{me.user.username}</span>
+            <span className="me-career">
+              生涯 <b>{me.stats.totalScore}</b> 分 · {me.stats.games} 局 {me.stats.wins} 胜
+            </span>
+            <button className="ghost" onClick={() => void logout()}>
+              退出
+            </button>
+          </div>
+
+          <button className="primary" onClick={createRoom}>
             创建房间
           </button>
           <div className="join-row">
@@ -115,7 +167,7 @@ export function App(): ReactElement {
               value={code}
               onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
             />
-            <button onClick={joinRoom} disabled={!name.trim() || code.length !== 6}>
+            <button onClick={joinRoom} disabled={code.length !== 6}>
               加入
             </button>
           </div>
@@ -306,7 +358,10 @@ function Game({
             {me.revealed && <em className="tag">⚑ 已亮</em>}
             {myTurn && <em className="tag turn">思考中…</em>}
           </span>
-          <span className="score">本场 {view.scores[view.you]}</span>
+          <span className="score">
+            本场 {view.scores[view.you]}
+            {me.career !== null && <em className="career">生涯 {me.career}</em>}
+          </span>
         </div>
         <div className="hand">
           {hand.map((c, i) => (
@@ -365,6 +420,7 @@ function Game({
               <tbody>
                 {view.seats.map((s) => {
                   const delta = view.settle!.deltas[s.seat];
+                  const careerDelta = view.careerDelta[s.seat] ?? 0;
                   return (
                     <tr key={s.seat}>
                       <td>{s.name}</td>
@@ -372,7 +428,16 @@ function Game({
                       <td className={delta >= 0 ? 'plus' : 'minus'}>
                         {delta > 0 ? `+${delta}` : delta === 0 ? '±0' : delta}
                       </td>
-                      <td className="dim">本场 {view.scores[s.seat]}</td>
+                      <td className="dim">
+                        本场 {view.scores[s.seat]}
+                        {careerDelta !== 0 && (
+                          <span className={careerDelta > 0 ? 'plus' : 'minus'}>
+                            {' '}
+                            / 生涯 {careerDelta > 0 ? '+' : ''}
+                            {careerDelta}
+                          </span>
+                        )}
+                      </td>
                     </tr>
                   );
                 })}
@@ -408,18 +473,20 @@ function Game({
 
 function SeatChip({ s, rel, isTurn }: { s: SeatView; rel: number; isTurn: boolean; you: number }): ReactElement {
   const seatName = ['', '下家', '对家', '上家'] as const;
+  const empty = s.name === '空位';
   return (
-    <div className={`chip${isTurn ? ' turn' : ''}${!s.connected ? ' off' : ''}`}>
+    <div className={`chip${isTurn ? ' turn' : ''}${!s.connected && !empty ? ' off' : ''}${empty ? ' empty-seat' : ''}`}>
       <div className="chip-head">
         <b>{s.name}</b>
         <span className="dim">{seatName[rel]}</span>
         {s.revealed && <em className="tag">⚑</em>}
       </div>
       <div className="chip-body">
-        <span className="cards-left">{s.cards} 张</span>
+        <span className="cards-left">{empty ? '等待加入' : `${s.cards} 张`}</span>
         {s.place !== null && <span className="place">{PLACE_NAMES[s.place]}</span>}
-        {!s.connected && <span className="off-tag">断线</span>}
+        {!s.connected && !empty && <span className="off-tag">断线</span>}
       </div>
+      {s.career !== null && <div className="chip-career">生涯 {s.career}</div>}
     </div>
   );
 }

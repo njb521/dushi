@@ -4,20 +4,26 @@
  *   npm run e2e
  *
  * 自动拉起测试服务器（端口 3123，可被 DUSHI_E2E_PORT 覆盖；若该端口已有服务则复用）。
+ * 数据目录默认用系统临时目录隔离（DUSHI_DATA_DIR 可覆盖），不会污染正式账号库。
  *
  * 客户端只依据视图行事（自己的手牌 + 公开牌面），等价于 4 个真实玩家，
  * 不读取任何服务端内部状态 —— 这本身就是信息最小化的验证。
+ *
+ * M2 起入房需要登录，所以整条链路也从"注册 4 个账号"开始：注册 → 拿 token → 带 token 进房
+ * → 打完一局 → 回查 /api/me 的生涯分是否等于本局 delta。
  */
 
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { Client } from 'colyseus.js';
 import { RANK_POWER, SUIT_POWER } from '@dushi/rules';
 
 const NAMES = ['甲', '乙', '丙', '丁'];
 const PORT = Number(process.env.DUSHI_E2E_PORT ?? 3123);
 const CODE = String(Math.floor(100_000 + Math.random() * 900_000));
+const BASE = `http://127.0.0.1:${PORT}`;
 
 interface View {
   phase: 'waiting' | 'playing' | 'declaring' | 'settling';
@@ -28,9 +34,17 @@ interface View {
   trick: { seat: number; cards: { s: string; r: string }[]; cat: string } | null;
   baiPaiHand: { s: string; r: string }[] | null;
   scores: number[];
+  careerDelta: number[];
+  seats: { seat: number; name: string; career: number | null }[];
   settle: null | { reason: string; deltas: number[]; places: number[] };
   eventLog: string[];
   rulesNote: string;
+}
+
+interface Account {
+  username: string;
+  password: string;
+  token: string;
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -47,7 +61,7 @@ function powerOfLabel(l: string): number {
 
 async function ensureServer(): Promise<(() => void) | null> {
   try {
-    await fetch(`http://127.0.0.1:${PORT}/`);
+    await fetch(`${BASE}/`);
     console.log(`复用已在 :${PORT} 的服务`);
     return null;
   } catch {
@@ -55,7 +69,11 @@ async function ensureServer(): Promise<(() => void) | null> {
   }
   const here = dirname(fileURLToPath(import.meta.url));
   const child = spawn(process.execPath, [join(here, '..', 'src', 'index.ts')], {
-    env: { ...process.env, PORT: String(PORT) },
+    env: {
+      ...process.env,
+      PORT: String(PORT),
+      DUSHI_DATA_DIR: process.env.DUSHI_DATA_DIR ?? join(tmpdir(), `dushi-e2e-${process.pid}`),
+    },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   child.stdout.on('data', (d: Buffer) => process.stdout.write(`  [server] ${d}`));
@@ -63,7 +81,7 @@ async function ensureServer(): Promise<(() => void) | null> {
   for (let i = 0; i < 40; i++) {
     await sleep(250);
     try {
-      await fetch(`http://127.0.0.1:${PORT}/`);
+      await fetch(`${BASE}/`);
       console.log(`测试服务器已启动 :${PORT}`);
       return () => child.kill();
     } catch {
@@ -74,9 +92,57 @@ async function ensureServer(): Promise<(() => void) | null> {
   throw new Error('测试服务器启动失败');
 }
 
+/** 注册 4 个账号并从 set-cookie 里取 token（等价于浏览器里登录一次） */
+async function registerAccounts(): Promise<Account[]> {
+  const suffix = Math.floor(Math.random() * 9000 + 1000);
+  const password = 'e2e-pass-1234';
+  const accounts: Account[] = [];
+  for (const base of NAMES) {
+    const username = `${base}${suffix}`;
+    const res = await fetch(`${BASE}/api/register`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    if (res.status !== 201) throw new Error(`注册失败 ${username}: ${res.status} ${await res.text()}`);
+    const cookie = res.headers
+      .getSetCookie()
+      .map((c) => c.split(';')[0])
+      .find((c) => c.startsWith('dushi_session='));
+    if (!cookie) throw new Error('注册成功但没拿到会话 cookie');
+    accounts.push({ username, password, token: cookie.slice('dushi_session='.length) });
+  }
+  return accounts;
+}
+
+async function careerOf(token: string): Promise<{ totalScore: number; games: number; wins: number }> {
+  const res = await fetch(`${BASE}/api/me`, { headers: { cookie: `dushi_session=${token}` } });
+  if (!res.ok) throw new Error(`/api/me 失败 ${res.status}`);
+  const body = (await res.json()) as { stats: { totalScore: number; games: number; wins: number } };
+  return body.stats;
+}
+
 async function main(): Promise<void> {
   const stop = await ensureServer();
   const client = new Client(`ws://127.0.0.1:${PORT}`);
+
+  // ── 0. 账号链路：注册 → 未登录必须被拒 → 带 token 才能进房 ──
+  const accounts = await registerAccounts();
+  console.log(`已注册 4 个测试账号：${accounts.map((a) => a.username).join(' ')}`);
+
+  let rejected = false;
+  try {
+    const ghost = await client.joinOrCreate('dushi', { code: String(Math.floor(100_000 + Math.random() * 900_000)) });
+    ghost.leave();
+  } catch {
+    rejected = true;
+  }
+  if (!rejected) {
+    if (stop) stop();
+    console.error('✗ 未登录竟然能进房（鉴权失效）');
+    process.exit(1);
+  }
+  console.log('✓ 未登录进房被拒绝');
 
   const rooms: any[] = [];
   const latest = new Map<number, View>();
@@ -129,7 +195,7 @@ async function main(): Promise<void> {
   };
 
   for (let i = 0; i < NAMES.length; i++) {
-    const room = await client.joinOrCreate('dushi', { code: CODE });
+    const room = await client.joinOrCreate('dushi', { code: CODE, token: accounts[i].token });
     rooms.push(room);
     const idx = i;
     room.onMessage('view', (v: View) => {
@@ -142,7 +208,22 @@ async function main(): Promise<void> {
     });
   }
   console.log(`4 客户端入房 ${CODE}`);
-  rooms.forEach((r, i) => r.send('setName', { name: NAMES[i] }));
+
+  // ── 房号隔离：换一个房号必须建出另一个房间，不能被 joinOrCreate 并进同一个 ──
+  const CODE2 = String(Number(CODE) + 1).padStart(6, '0');
+  const otherRoom = await client.joinOrCreate('dushi', { code: CODE2, token: accounts[0].token });
+  const otherView = await new Promise<View>((resolve) => {
+    otherRoom.onMessage('view', (v: View) => resolve(v));
+  });
+  otherRoom.leave();
+  if (otherView.roomCode !== CODE2 || otherView.you !== 0) {
+    await sleep(100);
+    if (stop) stop();
+    console.error(`✗ 房号隔离失效：进 ${CODE2} 却拿到房号 ${otherView.roomCode} / 座位 ${otherView.you}`);
+    process.exit(1);
+  }
+  console.log(`✓ 房号隔离正常（${CODE} / ${CODE2} 是两个独立房间）`);
+
   await sleep(300);
   rooms.forEach((r) => r.send('ready', { ready: true }));
 
@@ -217,6 +298,24 @@ async function main(): Promise<void> {
   const sum = deltas.reduce((a, b) => a + b, 0);
   console.log(`✓ 对局完成，4 人全部收到结算 deltas=${JSON.stringify(deltas)} 零和=${sum === 0}`);
   if (sum !== 0) await fail('结算非零和');
+
+  // ── 生涯分入库校验：每个座位的人 /api/me 总分必须等于本局 delta ──
+  for (let seat = 0; seat < 4; seat++) {
+    const stats = await careerOf(accounts[seat].token);
+    if (stats.totalScore !== deltas[seat] || stats.games !== 1) {
+      await fail(
+        `生涯分不对：座位 ${seat}(${accounts[seat].username}) 期望 totalScore=${deltas[seat]} games=1，实际 ${JSON.stringify(stats)}`,
+      );
+    }
+  }
+  console.log('✓ 生涯分已入库，4 人均与本局 delta 一致');
+
+  // 座位名必须来自账号，视图里必须带生涯分
+  const namesOk = finalViews.every((v) =>
+    v.seats.every((s, i) => s.name === accounts[i].username && s.career !== null),
+  );
+  if (!namesOk) await fail('座位名/生涯分未按账号下发');
+  console.log('✓ 座位名与生涯分随视图下发');
 
   for (const r of rooms) {
     try {

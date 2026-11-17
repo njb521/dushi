@@ -38,3 +38,10 @@ desktop.ini
 # 临时
 *.tmp
 _probe.txt
+
+# 会话导出 / 临时包（本地留档，不入库）
+session*.jsonl
+dsh-session-*.zip
+_esb_test.js
+_srv_out.log
+_srv_err.log

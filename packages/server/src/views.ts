@@ -19,6 +19,8 @@ export interface SeatView {
   readonly ready: boolean;
   readonly revealed: boolean;
   readonly place: number | null;
+  /** 该座位的生涯总分（未登录的座位为 null） */
+  readonly career: number | null;
 }
 
 export type Phase = 'waiting' | 'playing' | 'declaring' | 'settling';
@@ -42,6 +44,8 @@ export interface View {
   /** 摆牌后所有人可见 */
   readonly baiPaiHand: Card[] | null;
   readonly scores: number[];
+  /** 本局生涯分变化（仅结算时有意义，其余时刻为 0） */
+  readonly careerDelta: number[];
   readonly mustContainD4: boolean;
   /** 你能否选择"不出"（报单时为 false，客户端据此禁用按钮） */
   readonly canPass: boolean;
@@ -72,15 +76,18 @@ export function buildView(g: GameRuntime, seat: number): View {
         ready: g.ready[s.id],
         revealed: s.revealed,
         place: s.place,
+        career: g.careerAt(s.id),
       }))
-    : g.clientSlots().map((c, id) => ({
+    : // 等待阶段还没有牌局：空座位就是没人坐，给 0 张而不是假装 13 张
+      g.clientSlots().map((c, id) => ({
         seat: id,
         name: g.seatNames[id],
-        cards: 13,
+        cards: 0,
         connected: c !== null,
         ready: g.ready[id],
         revealed: false,
         place: null,
+        career: g.careerAt(id),
       }));
 
   const showHand = phase !== 'waiting';
@@ -114,6 +121,7 @@ export function buildView(g: GameRuntime, seat: number): View {
     declareAsk: isSoloAsked,
     baiPaiHand: st?.baiPai && st.soloSeat !== null ? [...st.seats[st.soloSeat].hand] : null,
     scores: st ? [...st.scores] : [0, 0, 0, 0],
+    careerDelta: settled ? [...g.careerDelta] : [0, 0, 0, 0],
     mustContainD4: !!st && !st.firstPlayDone && st.requireD4 && st.currentSeat === seat,
     canPass,
     settle: settled && g.lastSettle && st

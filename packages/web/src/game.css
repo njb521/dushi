@@ -62,6 +62,23 @@ input:focus { border-color: var(--gold); }
 .lobby-rules { color: var(--dim); font-size: 13px; }
 .lobby-rules pre { white-space: pre-wrap; margin-top: 8px; line-height: 1.7; font-family: inherit; }
 
+/* ── 登录 / 账号条 ─────────────────────── */
+.auth-box { gap: 10px; }
+.tabs { display: flex; gap: 6px; background: rgba(0, 0, 0, 0.25); border-radius: 20px; padding: 4px; }
+.tabs button { flex: 1; padding: 8px 0; border: 0; background: transparent; color: var(--dim); border-radius: 16px; font-weight: 600; }
+.tabs button.on { background: var(--gold); color: #3a2b00; }
+.hint { font-size: 12px; color: var(--dim); text-align: center; line-height: 1.6; }
+
+.me-bar {
+  display: flex; align-items: center; gap: 8px;
+  background: rgba(242, 193, 78, 0.1);
+  border: 1px solid rgba(242, 193, 78, 0.35);
+  border-radius: 12px; padding: 8px 12px; font-size: 12px; color: var(--dim);
+}
+.me-name { color: var(--ink); font-weight: 700; font-size: 14px; }
+.me-career { margin-left: auto; }
+.me-career b { color: var(--gold); font-size: 15px; }
+
 /* ── 牌桌 ─────────────────────────────── */
 .table { height: 100%; display: flex; flex-direction: column; padding: env(safe-area-inset-top) 10px env(safe-area-inset-bottom); max-width: 860px; margin: 0 auto; }
 
@@ -86,12 +103,15 @@ input:focus { border-color: var(--gold); }
 }
 .chip.turn { border-color: var(--gold); box-shadow: 0 0 12px rgba(242, 193, 78, 0.35); }
 .chip.off { opacity: 0.55; }
+.chip.empty-seat { border-style: dashed; opacity: 0.7; }
 .chip-head { display: flex; align-items: baseline; gap: 6px; }
 .chip-head b { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chip-body { display: flex; gap: 8px; align-items: center; margin-top: 4px; font-size: 12px; color: var(--dim); }
 .cards-left { color: var(--ink); font-weight: 700; }
 .place { color: var(--gold); }
 .off-tag { color: #ff9d97; }
+.chip-career { margin-top: 2px; font-size: 11px; color: rgba(242, 193, 78, 0.75); }
+.career { font-style: normal; font-size: 11px; color: rgba(242, 193, 78, 0.75); margin-left: 8px; }
 
 .tag { font-style: normal; font-size: 10px; padding: 2px 6px; border-radius: 8px; background: var(--red); color: #fff; margin-left: 4px; }
 .tag.turn { background: var(--gold); color: #3a2b00; }

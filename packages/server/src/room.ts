@@ -4,10 +4,14 @@
  * 同步策略（设计文档 §5.2）：不使用 Colyseus 的共享 state 同步 —— 那会把所有手牌
  * 广播给全员。房间状态只存在于服务端内存，每次变化后为每个座位单独计算"可见视图"
  * （views.ts），通过 private message 下发。客户端不发任何"判断"，只发"意图"。
+ *
+ * 鉴权（M2）：进房前必须已登录 —— onAuth 从 WS 握手携带的 cookie（或 join options.token，
+ * 给脚本/测试用）验签，拿不到有效会话就拒绝入房。座位因此天然绑定账号，结算才能落到生涯分上。
  */
 
-import { Room } from '@colyseus/core';
+import { Room, ServerError } from '@colyseus/core';
 import type { Client } from '@colyseus/core';
+import type { AuthContext } from '@colyseus/core';
 import type { Card, GameState, SettleResult } from '@dushi/rules';
 import {
   canPass,
@@ -24,6 +28,10 @@ import {
 } from '@dushi/rules';
 import { buildView } from './views.ts';
 import type { View } from './views.ts';
+import { COOKIE_NAME, parseCookies, resolveSession } from './auth/session.ts';
+import type { SessionUser } from './auth/session.ts';
+import { careerOf, createMatch, endMatch, recordRound } from './db.ts';
+import type { RoundResultInput } from './db.ts';
 
 const BOT_DELAY_MS = 4_000;
 const ROUNDS = 8;
@@ -35,6 +43,13 @@ export interface DeclareMsg {
   choice: 'none' | 'baiPai' | 'surrender';
 }
 
+/** 座位上的账号（进房时绑定；生涯分随结算刷新，仅用于展示） */
+export interface SeatUser {
+  id: number;
+  username: string;
+  career: number;
+}
+
 /** 房间持有的对局运行时（独立成类方便 views.ts 只依赖窄接口） */
 export class GameRuntime {
   readonly roomCode: string;
@@ -43,7 +58,14 @@ export class GameRuntime {
   clients: (Client | null)[] = [null, null, null, null];
   ready: boolean[] = [false, false, false, false];
   seatNames: string[] = ['空位', '空位', '空位', '空位'];
+  /** 每个座位当前坐着的账号 */
+  seatUsers: (SeatUser | null)[] = [null, null, null, null];
+  /** 本局开打时的座位账号快照 —— 结算按这个算，中途换人不影响已开局的那一局 */
+  roundUsers: (SeatUser | null)[] = [null, null, null, null];
+  matchId: number | null = null;
   lastSettle: SettleResult | null = null;
+  /** 本局生涯分变化（seat → Δ），结算弹窗用 */
+  careerDelta: number[] = [0, 0, 0, 0];
   phase: 'waiting' | 'ingame' = 'waiting';
   hostSeat = 0;
   declareDeadline = 0;
@@ -55,6 +77,10 @@ export class GameRuntime {
 
   clientSlots(): (Client | null)[] {
     return this.clients;
+  }
+
+  careerAt(seat: number): number | null {
+    return this.seatUsers[seat]?.career ?? null;
   }
 
   canPassNow(seat: number): boolean {
@@ -89,7 +115,6 @@ export class DushiRoom extends Room {
     this.g = new GameRuntime(code);
 
     this.onMessage('ready', (client, msg) => this.handleReady(client, msg));
-    this.onMessage('setName', (client, msg) => this.handleSetName(client, msg));
     this.onMessage('play', (client, msg) => this.handlePlay(client, msg as PlayMsg));
     this.onMessage('pass', (client) => this.handlePass(client));
     this.onMessage('declare', (client, msg) => this.handleDeclare(client, msg as DeclareMsg));
@@ -100,13 +125,46 @@ export class DushiRoom extends Room {
     });
   }
 
-  override onJoin(client: Client): void {
+  /**
+   * 进房鉴权：会话来自 WS 握手的 cookie（浏览器自动带），脚本可用 options.token。
+   * 未登录一律拒绝 —— 生涯分必须挂在稳定账号上，游客座位会让计分变成糊涂账。
+   */
+  override onAuth(
+    _client: Client,
+    options: { token?: unknown } | undefined,
+    ctx: AuthContext | undefined,
+  ): SeatUser {
+    const fromOptions = typeof options?.token === 'string' ? options.token : null;
+    const fromCookie = parseCookies(ctx?.headers?.cookie)[COOKIE_NAME] ?? null;
+    const user: SessionUser | null = resolveSession(fromOptions ?? fromCookie);
+    if (!user) throw new ServerError(401, '请先登录再进房');
+    return { id: user.id, username: user.username, career: careerOf(user.id) };
+  }
+
+  override onJoin(client: Client, _options?: unknown, auth?: SeatUser): void {
+    const user = auth ?? null;
+    if (!user) {
+      client.send('error', { msg: '登录状态失效，请重新登录' });
+      client.leave();
+      return;
+    }
+    // 同一账号不允许占两个座位（两个标签页），否则会重复记分
+    const dup = this.g.seatUsers.findIndex((u) => u?.id === user.id);
+    if (dup !== -1) {
+      client.send('error', { msg: '这个账号已经在这个房间了，别开两个窗口' });
+      client.leave();
+      return;
+    }
     const seat = this.g.clients.indexOf(null);
     if (seat === -1) {
+      client.send('error', { msg: '房间满了（4 人）' });
       client.leave();
       return;
     }
     this.g.clients[seat] = client;
+    this.g.seatUsers[seat] = user;
+    this.g.seatNames[seat] = user.username;
+    if (this.g.state) this.g.state.seats[seat].name = user.username;
     this.pushAll();
   }
 
@@ -115,6 +173,8 @@ export class DushiRoom extends Room {
     if (seat === -1) return;
     this.g.clients[seat] = null;
     this.g.ready[seat] = false;
+    // 座位上的账号保留到本局结束：断线托管仍然在替这个人打，结算也该记在他头上
+    if (this.g.state && this.g.phase === 'waiting') this.g.seatUsers[seat] = null;
     if (this.g.state) {
       this.g.state.log.push(`${this.g.seatNames[seat]} ${consented ? '离开' : '断线'}`);
     }
@@ -138,15 +198,6 @@ export class DushiRoom extends Room {
 
   // ── 消息处理 ─────────────────────────────────────────
 
-  private handleSetName(client: Client, msg: { name?: unknown }): void {
-    const seat = this.seatOf(client);
-    if (seat === -1 || this.g.phase !== 'waiting') return;
-    const name = sanitizeName(msg?.name);
-    this.g.seatNames[seat] = name;
-    if (this.g.state) this.g.state.seats[seat].name = name;
-    this.pushAll();
-  }
-
   private handleReady(client: Client, msg: { ready?: unknown }): void {
     const seat = this.seatOf(client);
     if (seat === -1) return;
@@ -164,10 +215,17 @@ export class DushiRoom extends Room {
   private startRound(): void {
     const prevScores = this.g.state?.scores ?? [0, 0, 0, 0];
     const round = (this.g.state?.round ?? 0) + 1;
-    this.g.state = createGame(this.g.seatNames, Math.floor(Math.random() * 2 ** 31), this.g.rules, round);
+    const seed = Math.floor(Math.random() * 2 ** 31);
+    this.g.state = createGame(this.g.seatNames, seed, this.g.rules, round);
     this.g.state.scores = prevScores;
     this.g.lastSettle = null;
+    this.g.careerDelta = [0, 0, 0, 0];
     this.g.phase = 'ingame';
+    // 本局参与者快照：中途有人掉线/换人，结算仍记在开局时坐着的人身上
+    this.g.roundUsers = this.g.seatUsers.map((u) => (u ? { ...u } : null));
+    if (this.g.matchId === null) {
+      this.g.matchId = createMatch(this.g.roomCode, JSON.stringify(this.g.rules), seed);
+    }
     this.pushAll();
     // 独食宣告倒计时
     if (this.g.state.phase === 'declaring') {
@@ -273,8 +331,54 @@ export class DushiRoom extends Room {
     applyScores(st, result.deltas);
     this.g.lastSettle = result;
     st.log.push(`结算：${result.reason}`);
+    this.persistRound(result);
     if (st.round >= ROUNDS) {
+      if (this.g.matchId !== null) endMatch(this.g.matchId);
       this.roundOverTimer = setTimeout(() => this.pushAll(), 0);
+    }
+  }
+
+  /**
+   * 结算入库：一局 4 条 match_players + user_stats 累加（同一事务）。
+   * 写库失败不能影响牌局继续 —— 所以捕获后只记日志，服务端权威的"本场分"仍在内存里。
+   */
+  private persistRound(result: SettleResult): void {
+    const st = this.g.state;
+    const matchId = this.g.matchId;
+    if (!st || matchId === null) return;
+
+    const declared: 'none' | 'baiPai' | 'surrender' | null =
+      st.surrendered ? 'surrender' : st.baiPai ? 'baiPai' : st.soloSeat !== null ? 'none' : null;
+
+    const rows: RoundResultInput[] = [];
+    for (let seat = 0; seat < 4; seat++) {
+      const user = this.g.roundUsers[seat];
+      if (!user) continue;
+      rows.push({
+        matchId,
+        roundNo: st.round,
+        userId: user.id,
+        seat,
+        place: st.seats[seat].place,
+        isSolo: st.soloSeat === seat,
+        declared: st.soloSeat === seat ? declared : null,
+        delta: result.deltas[seat],
+      });
+    }
+
+    try {
+      const careers = recordRound(rows);
+      for (let seat = 0; seat < 4; seat++) {
+        const user = this.g.roundUsers[seat];
+        const career = user ? careers.get(user.id) : undefined;
+        if (user && career !== undefined) {
+          this.g.careerDelta[seat] = result.deltas[seat];
+          if (this.g.seatUsers[seat]?.id === user.id) this.g.seatUsers[seat]!.career = career;
+          user.career = career;
+        }
+      }
+    } catch (e) {
+      console.error('[room] 结算写库失败', this.g.roomCode, e);
     }
   }
 
@@ -321,9 +425,4 @@ function randomCode(): string {
   let out = '';
   for (let i = 0; i < 6; i++) out += Math.floor(Math.random() * 10);
   return out;
-}
-
-function sanitizeName(name: unknown): string {
-  const s = String(name ?? '').trim().slice(0, 12);
-  return s || `玩家${Math.floor(Math.random() * 90 + 10)}`;
 }

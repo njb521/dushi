@@ -16,6 +16,8 @@ export interface SeatView {
   ready: boolean;
   revealed: boolean;
   place: number | null;
+  /** 生涯总分；未登录账号的座位为 null */
+  career: number | null;
 }
 
 export interface SettleInfo {
@@ -40,6 +42,8 @@ export interface View {
   declareAsk: boolean;
   baiPaiHand: Card[] | null;
   scores: number[];
+  /** 本局生涯分变化，仅结算时有意义 */
+  careerDelta: number[];
   mustContainD4: boolean;
   canPass: boolean;
   settle: SettleInfo | null;

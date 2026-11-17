@@ -1,10 +1,11 @@
 /**
- * 单端口服务：同一路由上提供 WebSocket（含 /matchmake）+ web 静态文件。
+ * 单端口服务：同一路由上提供 WebSocket（含 /matchmake）+ /api 账号接口 + web 静态文件。
  *
  *   node packages/server/src/index.ts   →  http://0.0.0.0:3000
  *   朋友在同一 WiFi 打开 http://<你的局域网IP>:3000 即可
  */
 
+import './quiet.ts'; // 必须最先执行：压掉 node:sqlite 的实验性警告
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -13,6 +14,9 @@ import { fileURLToPath } from 'node:url';
 import { networkInterfaces } from 'node:os';
 import { Server } from '@colyseus/core';
 import { WebSocketTransport } from '@colyseus/ws-transport';
+import { handleApi } from './api.ts';
+import { DB_FILE, openDb } from './db.ts';
+import { sessionSecret } from './auth/session.ts';
 import { DushiRoom } from './room.ts';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
@@ -32,6 +36,10 @@ const MIME: Record<string, string> = {
 
 const httpServer = createServer(async (req, res) => {
   try {
+    const url = new URL(req.url ?? '/', 'http://localhost');
+    // 账号接口优先，未命中再走静态文件
+    if (await handleApi(req, res)) return;
+
     if (!existsSync(WEB_DIST)) {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
       res.end(
@@ -39,7 +47,6 @@ const httpServer = createServer(async (req, res) => {
       );
       return;
     }
-    const url = new URL(req.url ?? '/', 'http://localhost');
     // 注意：Windows 上 path.normalize('/') 会得到 '\'，所以先做原始比较
     const pathname = decodeURIComponent(url.pathname);
     if (pathname.includes('..')) {
@@ -60,12 +67,18 @@ const gameServer = new Server({
   transport: new WebSocketTransport({ server: httpServer }),
 });
 
-// joinOrCreate 按 options（即房号）深比较匹配房间；首个进房者建房，其余加入同房
-gameServer.define('dushi', DushiRoom);
+// 关键：必须 filterBy(['code'])，否则 joinOrCreate 只按房间名匹配 —— 不同房号会全部挤进
+// 同一个房间（M1' 单群使用时没暴露，多群同时开局立刻串房）。
+gameServer.define('dushi', DushiRoom).filterBy(['code']);
+
+// 账号库与会话密钥：启动即初始化，坏掉要立刻暴露，而不是等第一个玩家登录
+openDb();
+sessionSecret();
 
 gameServer.listen({ port: PORT });
 
 console.log(`🂡 独食服务器已启动：http://localhost:${PORT}`);
+console.log(`   账号库：${DB_FILE}`);
 if (existsSync(WEB_DIST)) console.log(`   已挂载前端构建产物：${WEB_DIST}`);
 
 function printLanHint(): void {
