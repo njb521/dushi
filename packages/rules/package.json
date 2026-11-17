@@ -1,0 +1,13 @@
+{
+  "name": "@dushi/rules",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "独食规则引擎：牌型、比较、状态机、计分（纯函数，无 IO、无框架依赖）",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node --test test/"
+  }
+}

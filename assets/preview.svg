@@ -1,0 +1,158 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="540" viewBox="0 0 960 540" role="img" aria-label="独食 界面原型">
+  <title>独食 · 界面原型</title>
+  <defs>
+    <linearGradient id="felt" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#15503a"/>
+      <stop offset="0.55" stop-color="#0d3527"/>
+      <stop offset="1" stop-color="#072018"/>
+    </linearGradient>
+    <linearGradient id="cardg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#e6ecf1"/>
+    </linearGradient>
+    <filter id="ds" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#000000" flood-opacity="0.35"/>
+    </filter>
+    <style>
+      .name{font:600 15px -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;fill:#dff3ea}
+      .sub{font:12px -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;fill:#8bb9a5}
+      .pill{font:600 11px -apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
+      .rank{font:700 17px "Helvetica Neue",Arial,sans-serif}
+      .suit{font:13px Arial,sans-serif}
+      .red{fill:#d9433c}
+      .blk{fill:#1b2733}
+      .top{font:13px -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;fill:#a8cfbe}
+    </style>
+  </defs>
+
+  <rect width="960" height="540" rx="16" fill="url(#felt)"/>
+  <rect x="0.5" y="0.5" width="959" height="539" rx="16" fill="none" stroke="#ffffff" stroke-opacity="0.08"/>
+
+  <!-- 顶栏 -->
+  <text class="top" x="32" y="36">房间 582134</text>
+  <text class="top" x="140" y="36" fill="#f2c14e">第 3 / 8 局</text>
+  <text class="top" x="928" y="36" text-anchor="end">房主 · 阿良</text>
+
+  <!-- 座位 2（左上） -->
+  <g>
+    <rect x="36" y="64" width="190" height="88" rx="12" fill="#ffffff" fill-opacity="0.06" stroke="#ffffff" stroke-opacity="0.12"/>
+    <text class="name" x="54" y="96">玩家2</text>
+    <rect x="118" y="80" width="66" height="20" rx="10" fill="#ffffff" fill-opacity="0.12"/>
+    <text class="pill" x="151" y="94" text-anchor="middle" fill="#dff3ea">第 2 名</text>
+    <text class="sub" x="54" y="122">剩 8 张</text>
+    <text class="sub" x="54" y="140">生涯 128 分</text>
+  </g>
+
+  <!-- 座位 3（右上，独食明牌） -->
+  <g>
+    <rect x="734" y="64" width="190" height="88" rx="12" fill="#ffffff" fill-opacity="0.06" stroke="#f2c14e" stroke-opacity="0.45"/>
+    <text class="name" x="752" y="96">玩家3</text>
+    <rect x="812" y="80" width="46" height="20" rx="10" fill="#f2c14e" fill-opacity="0.9"/>
+    <text class="pill" x="835" y="94" text-anchor="middle" fill="#3a2b00">独食</text>
+    <text class="sub" x="868" y="94">明牌</text>
+    <text class="sub" x="752" y="122">剩 3 张</text>
+    <text class="sub" x="752" y="140">生涯 96 分</text>
+  </g>
+
+  <!-- 座位 1（左下，报单） -->
+  <g>
+    <rect x="36" y="300" width="190" height="88" rx="12" fill="#ffffff" fill-opacity="0.06" stroke="#ffffff" stroke-opacity="0.12"/>
+    <text class="name" x="54" y="332">玩家1</text>
+    <rect x="120" y="316" width="60" height="20" rx="10" fill="#d9433c" fill-opacity="0.85"/>
+    <text class="pill" x="150" y="330" text-anchor="middle" fill="#ffffff">报单</text>
+    <text class="sub" x="54" y="358">剩 1 张</text>
+    <text class="sub" x="54" y="376">生涯 57 分</text>
+  </g>
+
+  <!-- 座位 0（右下，我） -->
+  <g>
+    <rect x="734" y="300" width="190" height="88" rx="12" fill="#ffffff" fill-opacity="0.09" stroke="#ffffff" stroke-opacity="0.22"/>
+    <text class="name" x="752" y="332">我</text>
+    <text class="sub" x="752" y="358">剩 13 张</text>
+    <text class="sub" x="752" y="376">生涯 143 分</text>
+  </g>
+
+  <!-- 出牌区 -->
+  <g>
+    <rect x="330" y="172" width="300" height="124" rx="14" fill="#000000" fill-opacity="0.18" stroke="#ffffff" stroke-opacity="0.08"/>
+    <text class="sub" x="480" y="196" text-anchor="middle">上一手 · 三带二</text>
+
+    <g filter="url(#ds)">
+      <rect x="411" y="210" width="34" height="48" rx="4" fill="url(#cardg)"/>
+      <rect x="437" y="210" width="34" height="48" rx="4" fill="url(#cardg)"/>
+      <rect x="463" y="210" width="34" height="48" rx="4" fill="url(#cardg)"/>
+      <rect x="489" y="210" width="34" height="48" rx="4" fill="url(#cardg)"/>
+      <rect x="515" y="210" width="34" height="48" rx="4" fill="url(#cardg)"/>
+    </g>
+    <text class="rank blk" x="428" y="233" text-anchor="middle">9</text>
+    <text class="rank blk" x="454" y="233" text-anchor="middle">9</text>
+    <text class="rank blk" x="480" y="233" text-anchor="middle">9</text>
+    <text class="rank blk" x="506" y="233" text-anchor="middle">5</text>
+    <text class="rank blk" x="532" y="233" text-anchor="middle">5</text>
+    <text class="suit blk" x="428" y="250" text-anchor="middle">♣</text>
+    <text class="suit red" x="454" y="250" text-anchor="middle">♦</text>
+    <text class="suit blk" x="480" y="250" text-anchor="middle">♠</text>
+    <text class="suit red" x="506" y="250" text-anchor="middle">♥</text>
+    <text class="suit blk" x="532" y="250" text-anchor="middle">♣</text>
+
+    <text class="sub" x="480" y="280" text-anchor="middle">压过：顺子 4-5-6-7-8</text>
+  </g>
+
+  <!-- 手牌 -->
+  <g filter="url(#ds)">
+    <rect x="236" y="396" width="56" height="80" rx="6" fill="url(#cardg)" stroke="#f2c14e" stroke-width="2"/>
+    <rect x="272" y="408" width="56" height="80" rx="6" fill="url(#cardg)"/>
+    <rect x="308" y="408" width="56" height="80" rx="6" fill="url(#cardg)"/>
+    <rect x="344" y="408" width="56" height="80" rx="6" fill="url(#cardg)"/>
+    <rect x="380" y="408" width="56" height="80" rx="6" fill="url(#cardg)"/>
+    <rect x="416" y="408" width="56" height="80" rx="6" fill="url(#cardg)"/>
+    <rect x="452" y="408" width="56" height="80" rx="6" fill="url(#cardg)"/>
+    <rect x="488" y="408" width="56" height="80" rx="6" fill="url(#cardg)"/>
+    <rect x="524" y="408" width="56" height="80" rx="6" fill="url(#cardg)"/>
+    <rect x="560" y="408" width="56" height="80" rx="6" fill="url(#cardg)"/>
+    <rect x="596" y="408" width="56" height="80" rx="6" fill="url(#cardg)"/>
+    <rect x="632" y="408" width="56" height="80" rx="6" fill="url(#cardg)"/>
+    <rect x="668" y="408" width="56" height="80" rx="6" fill="url(#cardg)"/>
+  </g>
+
+  <g>
+    <text class="rank blk" x="260" y="424" text-anchor="middle">3</text>
+    <text class="suit blk" x="260" y="440" text-anchor="middle">♠</text>
+    <text class="rank red" x="296" y="434" text-anchor="middle">3</text>
+    <text class="suit red" x="296" y="450" text-anchor="middle">♥</text>
+    <text class="rank blk" x="332" y="434" text-anchor="middle">2</text>
+    <text class="suit blk" x="332" y="450" text-anchor="middle">♣</text>
+    <text class="rank blk" x="368" y="434" text-anchor="middle">A</text>
+    <text class="suit blk" x="368" y="450" text-anchor="middle">♠</text>
+    <text class="rank red" x="404" y="434" text-anchor="middle">K</text>
+    <text class="suit red" x="404" y="450" text-anchor="middle">♥</text>
+    <text class="rank red" x="440" y="434" text-anchor="middle">Q</text>
+    <text class="suit red" x="440" y="450" text-anchor="middle">♦</text>
+    <text class="rank blk" x="476" y="434" text-anchor="middle">J</text>
+    <text class="suit blk" x="476" y="450" text-anchor="middle">♣</text>
+    <text class="rank blk" x="512" y="434" text-anchor="middle">10</text>
+    <text class="suit blk" x="512" y="450" text-anchor="middle">♠</text>
+    <text class="rank red" x="548" y="434" text-anchor="middle">9</text>
+    <text class="suit red" x="548" y="450" text-anchor="middle">♥</text>
+    <text class="rank blk" x="584" y="434" text-anchor="middle">8</text>
+    <text class="suit blk" x="584" y="450" text-anchor="middle">♣</text>
+    <text class="rank red" x="620" y="434" text-anchor="middle">7</text>
+    <text class="suit red" x="620" y="450" text-anchor="middle">♦</text>
+    <text class="rank blk" x="656" y="434" text-anchor="middle">6</text>
+    <text class="suit blk" x="656" y="450" text-anchor="middle">♠</text>
+    <text class="rank red" x="692" y="434" text-anchor="middle">4</text>
+    <text class="suit red" x="692" y="450" text-anchor="middle">♦</text>
+  </g>
+
+  <!-- 按钮 -->
+  <g>
+    <rect x="318" y="500" width="92" height="32" rx="16" fill="#ffffff" fill-opacity="0.1" stroke="#ffffff" stroke-opacity="0.18"/>
+    <text class="pill" x="364" y="521" text-anchor="middle" fill="#dff3ea">提示</text>
+
+    <rect x="428" y="500" width="92" height="32" rx="16" fill="#ffffff" fill-opacity="0.1" stroke="#ffffff" stroke-opacity="0.18"/>
+    <text class="pill" x="474" y="521" text-anchor="middle" fill="#dff3ea">不出</text>
+
+    <rect x="538" y="500" width="104" height="32" rx="16" fill="#f2c14e"/>
+    <text class="pill" x="590" y="521" text-anchor="middle" fill="#3a2b00">出牌</text>
+  </g>
+</svg>

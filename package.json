@@ -1,0 +1,19 @@
+{
+  "name": "dushi",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "四人联机「独食」（钦州独食 / 广西独食）",
+  "workspaces": [
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=22.6"
+  },
+  "scripts": {
+    "test": "node --test packages/rules/test/",
+    "test:watch": "node --test --watch packages/rules/test/",
+    "play": "node packages/rules/cli/play.ts",
+    "soak": "node packages/rules/cli/sim.ts"
+  }
+}
