@@ -37,6 +37,12 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
+export interface NameCheck {
+  available: boolean;
+  reason?: 'invalid' | 'taken';
+  error?: string;
+}
+
 export const api = {
   me: (): Promise<Me> => call<Me>('/api/me'),
   register: (username: string, password: string): Promise<Me> =>
@@ -44,6 +50,9 @@ export const api = {
   login: (username: string, password: string): Promise<Me> =>
     call<Me>('/api/login', { method: 'POST', body: JSON.stringify({ username, password }) }),
   logout: (): Promise<void> => call<void>('/api/logout', { method: 'POST' }),
+  /** 注册页边打边查：这个用户名能不能用 */
+  checkUsername: (name: string): Promise<NameCheck> =>
+    call<NameCheck>(`/api/username-available?name=${encodeURIComponent(name)}`),
   changePassword: (oldPassword: string, newPassword: string): Promise<Me> =>
     call<Me>('/api/password', {
       method: 'POST',

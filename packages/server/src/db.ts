@@ -18,7 +18,7 @@ export const DATA_DIR = process.env.DUSHI_DATA_DIR ?? join(HERE, '..', '..', '..
 export const DB_FILE = join(DATA_DIR, 'dushi.db');
 
 /** 当前 schema 版本，递增即触发迁移 */
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 export interface UserRow {
   id: number;
@@ -49,7 +49,6 @@ export interface RoundResultInput {
   declared: 'none' | 'baiPai' | 'surrender' | null;
   delta: number;
 }
-
 let db: DatabaseSync | null = null;
 
 export function openDb(file = DB_FILE): DatabaseSync {
@@ -125,7 +124,15 @@ function migrate(conn: DatabaseSync): void {
         updated_at  INTEGER NOT NULL DEFAULT 0
       );
     `);
-    conn.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+    conn.exec('PRAGMA user_version = 1');
+  }
+
+  // v2（M3）：单人练习局标记。练习局只记历史，不累加生涯分 —— 有它才能算清"哪些分是跟人打的"
+  if (version < 2) {
+    conn.exec(`
+      ALTER TABLE matches ADD COLUMN vs_ai INTEGER NOT NULL DEFAULT 0;
+    `);
+    conn.exec('PRAGMA user_version = 2');
   }
 }
 
@@ -147,6 +154,15 @@ function tx<T>(conn: DatabaseSync, fn: () => T): T {
 const num = (v: unknown): number => Number(v ?? 0);
 
 // ── 用户 ────────────────────────────────────────────────
+
+/**
+ * 用户名是否已被占用。
+ * 列上是 COLLATE NOCASE，所以「阿良」和「阿良 」（trim 后）以及英文大小写都算同一个。
+ */
+export function usernameTaken(username: string): boolean {
+  const row = getDb().prepare('SELECT 1 AS hit FROM users WHERE username = ?').get(username);
+  return row !== undefined;
+}
 
 /** 创建用户；用户名已被占用时返回 null（不抛错，靠 UNIQUE 约束兜底并发） */
 export function createUser(username: string, passHash: string): UserRow | null {
@@ -233,10 +249,10 @@ export function leaderboard(limit = 10): { username: string; total_score: number
 
 // ── 场次 ────────────────────────────────────────────────
 
-export function createMatch(roomCode: string, rulesJson: string, seed: number): number {
+export function createMatch(roomCode: string, rulesJson: string, seed: number, vsAi = false): number {
   const info = getDb()
-    .prepare('INSERT INTO matches (room_code, rules_json, started_at, seed) VALUES (?, ?, ?, ?)')
-    .run(roomCode, rulesJson, nowSec(), seed);
+    .prepare('INSERT INTO matches (room_code, rules_json, started_at, seed, vs_ai) VALUES (?, ?, ?, ?, ?)')
+    .run(roomCode, rulesJson, nowSec(), seed, vsAi ? 1 : 0);
   return num(info.lastInsertRowid);
 }
 
@@ -246,9 +262,13 @@ export function endMatch(matchId: number): void {
 
 /**
  * 记录一局结果并累加生涯分（同一事务：match_players 插入 + user_stats 更新）。
- * 返回该用户更新后的生涯分。
+ *
+ * `practice = true` 时只写对局历史，不动 user_stats —— 和 AI 打的练习局不进生涯分，
+ * 否则单人模式就成了刷分器。
+ *
+ * 返回该用户更新后的生涯分（练习局返回当前值）。
  */
-export function recordRound(results: RoundResultInput[]): Map<number, number> {
+export function recordRound(results: RoundResultInput[], practice = false): Map<number, number> {
   const conn = getDb();
   const ts = nowSec();
   const out = new Map<number, number>();
@@ -284,6 +304,7 @@ export function recordRound(results: RoundResultInput[]): Map<number, number> {
         r.delta,
         ts,
       );
+      if (practice) continue;
       const win = r.place === 1 ? 1 : 0;
       upd.run(r.userId, r.delta, win, r.isSolo ? 1 : 0, r.isSolo && win ? 1 : 0, ts);
     }

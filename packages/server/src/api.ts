@@ -21,9 +21,10 @@ import {
   recentRounds,
   touchLogin,
   updatePassword,
+  usernameTaken,
 } from './db.ts';
 import { burnVerifyTime, hashPassword, verifyPassword } from './auth/password.ts';
-import { loginLimiter, registerLimiter } from './auth/limiter.ts';
+import { checkLimiter, loginLimiter, registerLimiter } from './auth/limiter.ts';
 import {
   clearCookie,
   isHttps,
@@ -153,6 +154,8 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
     switch (route) {
       case 'POST /api/register':
         return await register(req, res);
+      case 'GET /api/username-available':
+        return checkUsername(req, res);
       case 'POST /api/login':
         return await login(req, res);
       case 'POST /api/logout':
@@ -178,6 +181,38 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
 }
 
 // ── 各接口 ──────────────────────────────────────────────
+
+/**
+ * 注册页的"这个用户名能用吗"。
+ *
+ * 只回答「格式对不对 / 有没有被占」，不做任何登录态要求 —— 它就是个输入框提示。
+ * 真正防重复的仍是 createUser 的唯一约束：这里说 available，提交时被别人抢先注册，
+ * 照样会在 register 里拿到 409。所以这个接口只是体验优化，不是安全边界。
+ */
+function checkUsername(req: IncomingMessage, res: ServerResponse): boolean {
+  const ip = clientIp(req);
+  const limit = checkLimiter.blocked(`check:${ip}`);
+  if (limit.blocked) {
+    fail(res, 429, '查得太快了，歇一下再输入', {
+      'retry-after': String(Math.ceil(limit.retryAfterMs / 1000)),
+    });
+    return true;
+  }
+  checkLimiter.hit(`check:${ip}`);
+
+  const raw = new URL(req.url ?? '/', 'http://localhost').searchParams.get('name') ?? '';
+  const username = validateUsername(raw);
+  if (!username) {
+    json(res, 200, { available: false, reason: 'invalid', error: '用户名 2–16 个字符，可用中英文、数字、下划线' });
+    return true;
+  }
+  if (usernameTaken(username)) {
+    json(res, 200, { available: false, reason: 'taken', error: '这个用户名已经被占用了，换一个吧' });
+    return true;
+  }
+  json(res, 200, { available: true });
+  return true;
+}
 
 async function register(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
   const ip = clientIp(req);

@@ -7,6 +7,13 @@
  *
  * 鉴权（M2）：进房前必须已登录 —— onAuth 从 WS 握手携带的 cookie（或 join options.token，
  * 给脚本/测试用）验签，拿不到有效会话就拒绝入房。座位因此天然绑定账号，结算才能落到生涯分上。
+ *
+ * 断线重连（M3）：非主动断开时座位保留 60 秒（allowReconnection），期间由托管按节奏替打；
+ * 超时才释放座位。座位映射按 sessionId 认人，不按 Client 对象身份 —— 重连后服务端拿到的是
+ * 一个新的 Client 实例。
+ *
+ * 单人模式：建房时 options.solo = true → 其余 3 座填 AI，用同一套规则引擎的 chooseAction 出牌。
+ * 练习局照常入库（matches.vs_ai = 1）但不累加生涯分。
  */
 
 import { Room, ServerError } from '@colyseus/core';
@@ -33,8 +40,14 @@ import type { SessionUser } from './auth/session.ts';
 import { careerOf, createMatch, endMatch, recordRound } from './db.ts';
 import type { RoundResultInput } from './db.ts';
 
-const BOT_DELAY_MS = 4_000;
 const ROUNDS = 8;
+/** 人类掉线后的托管节奏：慢一点，既给人重连的时间，也不至于把牌桌卡死 */
+const TAKEOVER_DELAY_MS = 4_000;
+/** 单人模式的 AI 出牌节奏：快，像坐在对面等你 */
+const AI_DELAY_MS = 800;
+/** 断线后座位保留多久（秒） */
+const RECONNECT_SEC = 60;
+const AI_NAMES = ['AI·阿良', 'AI·小陈', 'AI·老王'];
 
 export interface PlayMsg {
   cards: string[];
@@ -54,29 +67,48 @@ export interface SeatUser {
 export class GameRuntime {
   readonly roomCode: string;
   readonly rules: ReturnType<typeof makeRules>;
+  /** 单人练习房：其余座位是 AI，且不计生涯分 */
+  readonly practice: boolean;
   state: GameState | null = null;
   clients: (Client | null)[] = [null, null, null, null];
+  /** 该座位是 AI（没有 Client，但永远"在座"且已准备） */
+  bots: boolean[] = [false, false, false, false];
   ready: boolean[] = [false, false, false, false];
   seatNames: string[] = ['空位', '空位', '空位', '空位'];
-  /** 每个座位当前坐着的账号 */
+  /** 每个座位当前坐着的账号（AI 与空位为 null） */
   seatUsers: (SeatUser | null)[] = [null, null, null, null];
   /** 本局开打时的座位账号快照 —— 结算按这个算，中途换人不影响已开局的那一局 */
   roundUsers: (SeatUser | null)[] = [null, null, null, null];
   matchId: number | null = null;
   lastSettle: SettleResult | null = null;
-  /** 本局生涯分变化（seat → Δ），结算弹窗用 */
+  /** 本局生涯分变化（seat → Δ），结算弹窗用；练习局恒为 0 */
   careerDelta: number[] = [0, 0, 0, 0];
   phase: 'waiting' | 'ingame' = 'waiting';
   hostSeat = 0;
-  declareDeadline = 0;
 
-  constructor(roomCode: string, rules = makeRules({ matchMode: 'rounds', rounds: ROUNDS })) {
+  constructor(roomCode: string, rules = makeRules({ matchMode: 'rounds', rounds: ROUNDS }), practice = false) {
     this.roomCode = roomCode;
     this.rules = rules;
+    this.practice = practice;
   }
 
   clientSlots(): (Client | null)[] {
     return this.clients;
+  }
+
+  isBot(seat: number): boolean {
+    return this.bots[seat];
+  }
+
+  /** 座位是否有人（AI 也算有人） */
+  occupied(seat: number): boolean {
+    return this.bots[seat] || this.clients[seat] !== null;
+  }
+
+  /** 第一个没人坐的座位，没有则 -1 */
+  freeSeat(): number {
+    for (let s = 0; s < 4; s++) if (!this.occupied(s)) return s;
+    return -1;
   }
 
   careerAt(seat: number): number | null {
@@ -91,6 +123,7 @@ export class GameRuntime {
     const r = this.rules;
     const mode = r.matchMode === 'rounds' ? `${r.rounds} 局` : r.matchMode === 'targetScore' ? `±${r.targetScore} 分` : '无限';
     return [
+      this.practice ? '单人练习（不计生涯分）' : null,
       `顺子 4-8..10-A（2、3 不入顺）`,
       `同花只比花色`,
       `独食必须头游`,
@@ -112,7 +145,7 @@ export class DushiRoom extends Room {
 
   override onCreate(options: Record<string, unknown>): void {
     const code = typeof options.code === 'string' && /^\d{6}$/.test(options.code) ? options.code : randomCode();
-    this.g = new GameRuntime(code);
+    this.g = new GameRuntime(code, undefined, options.solo === true);
 
     this.onMessage('ready', (client, msg) => this.handleReady(client, msg));
     this.onMessage('play', (client, msg) => this.handlePlay(client, msg as PlayMsg));
@@ -148,6 +181,12 @@ export class DushiRoom extends Room {
       client.leave();
       return;
     }
+    // 练习房只留给建房那一个人，别人用同一个房号挤不进来
+    if (this.g.practice && this.g.clients.some((c) => c !== null)) {
+      client.send('error', { msg: '这是单人练习房，点"单人练习"自己开一间' });
+      client.leave();
+      return;
+    }
     // 同一账号不允许占两个座位（两个标签页），否则会重复记分
     const dup = this.g.seatUsers.findIndex((u) => u?.id === user.id);
     if (dup !== -1) {
@@ -155,7 +194,7 @@ export class DushiRoom extends Room {
       client.leave();
       return;
     }
-    const seat = this.g.clients.indexOf(null);
+    const seat = this.g.freeSeat();
     if (seat === -1) {
       client.send('error', { msg: '房间满了（4 人）' });
       client.leave();
@@ -165,26 +204,74 @@ export class DushiRoom extends Room {
     this.g.seatUsers[seat] = user;
     this.g.seatNames[seat] = user.username;
     if (this.g.state) this.g.state.seats[seat].name = user.username;
+    if (this.g.practice) this.fillBots(seat);
     this.pushAll();
   }
 
+  /** 单人模式：把剩下三个座位交给 AI */
+  private fillBots(humanSeat: number): void {
+    let n = 0;
+    for (let s = 0; s < 4; s++) {
+      if (s === humanSeat) continue;
+      this.g.bots[s] = true;
+      this.g.seatNames[s] = AI_NAMES[n % AI_NAMES.length];
+      this.g.ready[s] = true;
+      if (this.g.state) this.g.state.seats[s].name = this.g.seatNames[s];
+      n++;
+    }
+  }
+
   override onLeave(client: Client, consented: boolean): void {
-    const seat = this.g.clients.indexOf(client);
+    const seat = this.seatOf(client);
     if (seat === -1) return;
     this.g.clients[seat] = null;
-    this.g.ready[seat] = false;
-    // 座位上的账号保留到本局结束：断线托管仍然在替这个人打，结算也该记在他头上
-    if (this.g.state && this.g.phase === 'waiting') this.g.seatUsers[seat] = null;
+    this.g.ready[seat] = this.g.bots[seat];
     if (this.g.state) {
-      this.g.state.log.push(`${this.g.seatNames[seat]} ${consented ? '离开' : '断线'}`);
+      this.g.state.log.push(`${this.g.seatNames[seat]} ${consented ? '离开' : '断线，座位保留 60 秒'}`);
     }
     this.pushAll();
-    // 对局中掉线：延时托管，不踢座位（允许刷新重开一局再进）
     this.scheduleBotIfNeeded();
+
+    // 主动退出（或这个座位本来就是 AI）→ 立刻释放
+    if (consented || this.g.bots[seat]) {
+      this.releaseSeat(seat);
+      return;
+    }
+
+    // 意外断线 → 保留座位等他回来，期间托管继续出牌
+    void this.allowReconnection(client, RECONNECT_SEC).then(
+      (reconnected) => {
+        this.g.clients[seat] = reconnected;
+        this.g.ready[seat] = true;
+        if (this.g.state) this.g.state.log.push(`${this.g.seatNames[seat]} 回来了`);
+        this.pushAll();
+        if (this.g.phase === 'waiting' && this.allSeatsReady()) this.startRound();
+        this.scheduleBotIfNeeded();
+      },
+      () => {
+        if (this.g.state) this.g.state.log.push(`${this.g.seatNames[seat]} 超时没回来，座位已释放`);
+        this.releaseSeat(seat);
+      },
+    );
   }
 
   override onDispose(): void {
     this.clearTimers();
+  }
+
+  /** 座位彻底空出来（注意：对局中保留座位名，让托管的人把这一局打完） */
+  private releaseSeat(seat: number): void {
+    this.g.clients[seat] = null;
+    this.g.ready[seat] = false;
+    this.g.bots[seat] = false;
+    this.g.seatUsers[seat] = null;
+    if (!this.g.state || this.g.phase === 'waiting') {
+      this.g.seatNames[seat] = '空位';
+      if (this.g.state) this.g.state.seats[seat].name = '空位';
+    }
+    this.pushAll();
+    // 练习房：人走了就没必要留着
+    if (this.g.practice && this.g.clients.every((c) => c === null)) void this.disconnect();
   }
 
   private clearTimers(): void {
@@ -192,8 +279,14 @@ export class DushiRoom extends Room {
     this.declareTimer = this.botTimer = this.roundOverTimer = null;
   }
 
+  /**
+   * 座位归属。重连后服务端拿到的是新的 Client 实例（Colyseus 内部把 sessionId 复用到新连接上），
+   * 所以先按对象比，再按 sessionId 兜底 —— 否则重连后连"我是哪个座位"都认不出来。
+   */
   private seatOf(client: Client): number {
-    return this.g.clients.indexOf(client);
+    const direct = this.g.clients.indexOf(client);
+    if (direct !== -1) return direct;
+    return this.g.clients.findIndex((c) => c !== null && c.sessionId === client.sessionId);
   }
 
   // ── 消息处理 ─────────────────────────────────────────
@@ -203,13 +296,17 @@ export class DushiRoom extends Room {
     if (seat === -1) return;
     this.g.ready[seat] = msg?.ready !== false;
     this.pushAll();
-    if (this.g.phase === 'waiting' && this.allConnectedReady()) {
+    if (this.g.phase === 'waiting' && this.allSeatsReady()) {
       this.startRound();
     }
   }
 
-  private allConnectedReady(): boolean {
-    return this.g.clients.every((c) => c !== null) && this.g.ready.every((r) => r);
+  /** 四个座位都有人（人或 AI）且都已准备 */
+  private allSeatsReady(): boolean {
+    for (let s = 0; s < 4; s++) {
+      if (!this.g.occupied(s) || !this.g.ready[s]) return false;
+    }
+    return true;
   }
 
   private startRound(): void {
@@ -224,19 +321,28 @@ export class DushiRoom extends Room {
     // 本局参与者快照：中途有人掉线/换人，结算仍记在开局时坐着的人身上
     this.g.roundUsers = this.g.seatUsers.map((u) => (u ? { ...u } : null));
     if (this.g.matchId === null) {
-      this.g.matchId = createMatch(this.g.roomCode, JSON.stringify(this.g.rules), seed);
+      this.g.matchId = createMatch(this.g.roomCode, JSON.stringify(this.g.rules), seed, this.g.practice);
     }
     this.pushAll();
-    // 独食宣告倒计时
-    if (this.g.state.phase === 'declaring') {
-      this.declareTimer = setTimeout(() => {
-        if (this.g.state?.phase === 'declaring') {
-          declare(this.g.state, 'none');
-          this.g.state.log.push('独食者超时未表态，按不表态处理');
-          this.pushAll();
-        }
-      }, this.g.rules.declareWindowMs);
-    }
+    this.armDeclareTimer();
+    // 首出者可能正好是 AI 或断线的人：给托管一个起点，否则牌桌会停在这里
+    this.scheduleBotIfNeeded();
+  }
+
+  /** 独食宣告倒计时；AI 当独食时不用等满 10 秒 */
+  private armDeclareTimer(): void {
+    const st = this.g.state;
+    if (!st || st.phase !== 'declaring') return;
+    const soloSeat = st.soloSeat;
+    const bot = soloSeat !== null && this.g.bots[soloSeat];
+    const delay = bot ? AI_DELAY_MS * 2 : this.g.rules.declareWindowMs;
+    this.declareTimer = setTimeout(() => {
+      if (this.g.state?.phase !== 'declaring') return;
+      declare(this.g.state, 'none');
+      this.g.state.log.push(bot ? 'AI 不表态，暗打' : '独食者超时未表态，按不表态处理');
+      this.pushAll();
+      this.scheduleBotIfNeeded();
+    }, delay);
   }
 
   private handleDeclare(client: Client, msg: DeclareMsg): void {
@@ -252,6 +358,8 @@ export class DushiRoom extends Room {
     declare(st, msg.choice);
     if (st.phase === 'settling') {
       this.doSettle();
+    } else {
+      this.scheduleBotIfNeeded();
     }
     this.pushAll();
   }
@@ -309,8 +417,8 @@ export class DushiRoom extends Room {
       client.send('error', { msg: `已打完 ${ROUNDS} 局，本场结束。` });
       return;
     }
-    // 其他人需要重新 ready
-    this.g.ready = this.g.ready.map(() => false);
+    // 其他人需要重新 ready（AI 由 fillBots 设为已准备）
+    this.g.ready = this.g.ready.map((_, s) => this.g.bots[s]);
     this.g.phase = 'waiting';
     this.pushAll();
   }
@@ -340,7 +448,8 @@ export class DushiRoom extends Room {
 
   /**
    * 结算入库：一局 4 条 match_players + user_stats 累加（同一事务）。
-   * 写库失败不能影响牌局继续 —— 所以捕获后只记日志，服务端权威的"本场分"仍在内存里。
+   * 练习局只记历史不记分。写库失败不能影响牌局继续 —— 捕获后只记日志，
+   * 服务端权威的"本场分"仍在内存里。
    */
   private persistRound(result: SettleResult): void {
     const st = this.g.state;
@@ -367,12 +476,13 @@ export class DushiRoom extends Room {
     }
 
     try {
-      const careers = recordRound(rows);
+      const careers = recordRound(rows, this.g.practice);
       for (let seat = 0; seat < 4; seat++) {
         const user = this.g.roundUsers[seat];
         const career = user ? careers.get(user.id) : undefined;
         if (user && career !== undefined) {
-          this.g.careerDelta[seat] = result.deltas[seat];
+          // 练习局不进生涯分，这里保持 0，避免 UI 显示成"涨了"
+          this.g.careerDelta[seat] = this.g.practice ? 0 : result.deltas[seat];
           if (this.g.seatUsers[seat]?.id === user.id) this.g.seatUsers[seat]!.career = career;
           user.career = career;
         }
@@ -382,7 +492,11 @@ export class DushiRoom extends Room {
     }
   }
 
-  /** 轮到断线玩家时，延时自动托管 */
+  /**
+   * 轮到"没有客户端"的座位就自动出牌：
+   *  - AI 座位：单人模式的对手，按 AI_DELAY_MS 的节奏
+   *  - 人类但断线：托管，按 TAKEOVER_DELAY_MS 慢一点，给重连留时间
+   */
   private scheduleBotIfNeeded(): void {
     if (this.botTimer) clearTimeout(this.botTimer);
     this.botTimer = null;
@@ -391,22 +505,24 @@ export class DushiRoom extends Room {
     const seat = st.currentSeat;
     if (this.g.clients[seat]) return;
 
+    const isAi = this.g.bots[seat];
     this.botTimer = setTimeout(() => {
       this.botTimer = null;
       const s = this.g.state;
       if (!s || s.phase !== 'playing' || s.currentSeat !== seat || this.g.clients[seat]) return;
+      const tag = isAi ? '🤖' : '⏳';
       const action = chooseAction(s, seat);
       if (action.type === 'play') {
         play(s, seat, action.cards);
-        s.log.push(`🤖 ${this.g.seatNames[seat]} 托管出牌`);
+        s.log.push(`${tag} ${this.g.seatNames[seat]} 出牌`);
         if (s.phase === 'settling') this.doSettle();
       } else {
         pass(s, seat);
-        s.log.push(`🤖 ${this.g.seatNames[seat]} 托管不出`);
+        s.log.push(`${tag} ${this.g.seatNames[seat]} 不出`);
       }
       this.pushAll();
       this.scheduleBotIfNeeded();
-    }, BOT_DELAY_MS);
+    }, isAi ? AI_DELAY_MS : TAKEOVER_DELAY_MS);
   }
 
   // ── 下发 ─────────────────────────────────────────────

@@ -18,6 +18,8 @@ export interface SeatView {
   place: number | null;
   /** 生涯总分；未登录账号的座位为 null */
   career: number | null;
+  /** 单人模式里的 AI 对手 */
+  bot: boolean;
 }
 
 export interface SettleInfo {
@@ -49,6 +51,8 @@ export interface View {
   settle: SettleInfo | null;
   eventLog: string[];
   rulesNote: string;
+  /** 单人练习房：不计生涯分 */
+  practice: boolean;
 }
 
 export const SUIT_CHAR: Record<Suit, string> = { S: '♠', H: '♥', C: '♣', D: '♦' };

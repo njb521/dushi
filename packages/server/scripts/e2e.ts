@@ -35,7 +35,8 @@ interface View {
   baiPaiHand: { s: string; r: string }[] | null;
   scores: number[];
   careerDelta: number[];
-  seats: { seat: number; name: string; career: number | null }[];
+  practice: boolean;
+  seats: { seat: number; name: string; career: number | null; bot: boolean; connected: boolean }[];
   settle: null | { reason: string; deltas: number[]; places: number[] };
   eventLog: string[];
   rulesNote: string;
@@ -130,6 +131,27 @@ async function main(): Promise<void> {
   const accounts = await registerAccounts();
   console.log(`已注册 4 个测试账号：${accounts.map((a) => a.username).join(' ')}`);
 
+  // ── 用户名查重接口：注册页边打边查用的那条 ──
+  const probe = async (name: string): Promise<{ available: boolean; reason?: string }> =>
+    (await fetch(`${BASE}/api/username-available?name=${encodeURIComponent(name)}`)).json() as Promise<{
+      available: boolean;
+      reason?: string;
+    }>;
+  const takenName = await probe(accounts[0].username);
+  const freshName = await probe(`空名${Math.floor(Math.random() * 90000 + 10000)}`);
+  const badName = await probe('a b');
+  if (takenName.available !== false || takenName.reason !== 'taken') {
+    if (stop) stop();
+    console.error(`✗ 查重没识别出已占用：${JSON.stringify(takenName)}`);
+    process.exit(1);
+  }
+  if (freshName.available !== true || badName.reason !== 'invalid') {
+    if (stop) stop();
+    console.error(`✗ 查重对新名字/非法名字判断不对：${JSON.stringify([freshName, badName])}`);
+    process.exit(1);
+  }
+  console.log('✓ 用户名查重：已占用 / 可用 / 格式非法 三种都判对');
+
   let rejected = false;
   try {
     const ghost = await client.joinOrCreate('dushi', { code: String(Math.floor(100_000 + Math.random() * 900_000)) });
@@ -194,10 +216,9 @@ async function main(): Promise<void> {
     }
   };
 
-  for (let i = 0; i < NAMES.length; i++) {
-    const room = await client.joinOrCreate('dushi', { code: CODE, token: accounts[i].token });
-    rooms.push(room);
-    const idx = i;
+  /** 把一个（可能重连后新建的）房间挂到某个座位上 */
+  const bindClient = (idx: number, room: any): void => {
+    rooms[idx] = room;
     room.onMessage('view', (v: View) => {
       latest.set(idx, v);
       audit(idx, v);
@@ -206,6 +227,11 @@ async function main(): Promise<void> {
       // 客户端策略可能出非法牌（例如 trick 变化竞态），记录但不致命
       console.log(`  [error→${idx}] ${e.msg}`);
     });
+  };
+
+  for (let i = 0; i < NAMES.length; i++) {
+    const room = await client.joinOrCreate('dushi', { code: CODE, token: accounts[i].token });
+    bindClient(i, room);
   }
   console.log(`4 客户端入房 ${CODE}`);
 
@@ -226,6 +252,47 @@ async function main(): Promise<void> {
 
   await sleep(300);
   rooms.forEach((r) => r.send('ready', { ready: true }));
+
+  // ── 断线重连：开局后把 3 号座位拽断线，再从凭证接回来 ──
+  const waitFor = async (cond: () => boolean, ms: number): Promise<boolean> => {
+    const until = Date.now() + ms;
+    while (Date.now() < until) {
+      if (cond()) return true;
+      await sleep(100);
+    }
+    return cond();
+  };
+  if (!(await waitFor(() => [...latest.values()].every((v) => v.phase === 'playing'), 15_000))) {
+    if (stop) stop();
+    console.error('✗ 15 秒内没进入出牌阶段，无法测重连');
+    process.exit(1);
+  }
+  const before = latest.get(3)!;
+  const handBefore = before.yourHand?.length ?? 0;
+  const reconnectionToken = rooms[3].reconnectionToken as string;
+  await rooms[3].leave(false); // 不带 consent 地断开 = 模拟掉线
+  await sleep(700);
+  let resumed: any = null;
+  try {
+    resumed = await new Client(`ws://127.0.0.1:${PORT}`).reconnect(reconnectionToken);
+  } catch (e) {
+    if (stop) stop();
+    console.error('✗ 重连失败：', (e as Error).message);
+    process.exit(1);
+  }
+  bindClient(3, resumed);
+  if (!(await waitFor(() => !!latest.get(3) && latest.get(3)!.yourHand !== null, 5_000))) {
+    if (stop) stop();
+    console.error('✗ 重连后没收到手牌视图');
+    process.exit(1);
+  }
+  const after = latest.get(3)!;
+  if (after.you !== 3 || (after.yourHand?.length ?? 0) > handBefore) {
+    if (stop) stop();
+    console.error(`✗ 重连后座位/手牌不对：座位 ${after.you}，手牌 ${after.yourHand?.length}（原 ${handBefore}）`);
+    process.exit(1);
+  }
+  console.log(`✓ 断线重连：座位 ${after.you} 恢复，手牌 ${after.yourHand?.length} 张未丢`);
 
   const lastSig = new Map<number, string>();
   const driver = setInterval(() => {
@@ -316,6 +383,70 @@ async function main(): Promise<void> {
   );
   if (!namesOk) await fail('座位名/生涯分未按账号下发');
   console.log('✓ 座位名与生涯分随视图下发');
+
+  // ── 单人模式：1 个人类 + 3 个 AI，打完一局且不涨生涯分 ──
+  const soloCode = String(300_000 + Math.floor(Math.random() * 600_000));
+  const soloClient = new Client(`ws://127.0.0.1:${PORT}`);
+  const soloRoom = await soloClient.joinOrCreate('dushi', {
+    code: soloCode,
+    token: accounts[0].token,
+    solo: true,
+  });
+  const firstSolo = await new Promise<View>((resolve) => {
+    soloRoom.onMessage('view', (v: View) => resolve(v));
+  });
+  const bots = firstSolo.seats.filter((s) => s.bot);
+  if (bots.length !== 3 || !firstSolo.practice) {
+    await fail(`单人房没填满 AI：bots=${bots.length} practice=${firstSolo.practice}`);
+  }
+  if (firstSolo.seats.some((s) => s.bot && !s.connected)) await fail('AI 座位不应显示为断线');
+  console.log(`✓ 单人房就绪：3 个 AI（${bots.map((s) => s.name).join('、')}）`);
+
+  const careerBeforeSolo = await careerOf(accounts[0].token);
+  let soloLatest: View | null = firstSolo;
+  let soloSettled: View | null = null;
+  soloRoom.onMessage('view', (v: View) => {
+    soloLatest = v;
+    if (v.settle) soloSettled = v;
+  });
+  soloRoom.send('ready', { ready: true });
+
+  let soloSig = '';
+  const soloDeadline = Date.now() + 60_000;
+  while (!soloSettled && Date.now() < soloDeadline) {
+    await sleep(200);
+    const v = soloLatest;
+    if (!v) continue;
+    if (v.phase === 'declaring') {
+      if (v.declareAsk) soloRoom.send('declare', { choice: 'none' });
+      continue;
+    }
+    if (v.phase !== 'playing' || v.turn !== v.you) continue;
+    const hand = v.yourHand ?? [];
+    if (hand.length === 0) continue;
+    const sig = `${v.trick ? v.trick.cards.map(label).join(',') : 'lead'}|${hand.length}`;
+    if (sig === soloSig) continue;
+    soloSig = sig;
+    if (!v.trick) soloRoom.send('play', { cards: [label(smallest(hand))] });
+    else if (v.trick.cards.length === 1) {
+      const beat = smallest(hand.filter((c) => power(c) > power(v.trick!.cards[0])));
+      if (beat) soloRoom.send('play', { cards: [label(beat)] });
+      else soloRoom.send('pass', {});
+    } else soloRoom.send('pass', {});
+  }
+  if (!soloSettled) await fail('单人局 60 秒内没打完（AI 可能没自动出牌）');
+  const aiPlayed = (soloSettled as View).eventLog.some((l) => l.includes('🤖'));
+  if (!aiPlayed) await fail('AI 没有出过牌');
+  console.log(`✓ 单人局打完：AI 正常出牌，deltas=${JSON.stringify((soloSettled as View).settle!.deltas)}`);
+
+  const careerAfterSolo = await careerOf(accounts[0].token);
+  if (careerAfterSolo.totalScore !== careerBeforeSolo.totalScore || careerAfterSolo.games !== careerBeforeSolo.games) {
+    await fail(
+      `练习局不该动生涯分：前 ${JSON.stringify(careerBeforeSolo)} → 后 ${JSON.stringify(careerAfterSolo)}`,
+    );
+  }
+  console.log('✓ 练习局不计生涯分');
+  soloRoom.leave();
 
   for (const r of rooms) {
     try {

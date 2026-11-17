@@ -27,6 +27,10 @@ const stored = <T,>(k: string, def: T): T => {
   }
 };
 
+/** 重连凭证放 sessionStorage：同一标签页刷新能回来，关掉标签页则失效（够用且不留痕） */
+const TOKEN_KEY = 'dushi.rtok';
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
 export function App(): ReactElement {
   const [me, setMe] = useState<Me | null | undefined>(undefined);
 
@@ -57,16 +61,40 @@ function Lobby({ me, onMe }: { me: Me; onMe: (m: Me | null) => void }): ReactEle
   const [view, setView] = useState<View | null>(null);
   const [toast, setToast] = useState('');
   const [connError, setConnError] = useState('');
+  const [reconnecting, setReconnecting] = useState(false);
   const roomRef = useRef<Room | null>(null);
   const settledRound = useRef(0);
+  const restored = useRef(false);
 
   const flash = (msg: string): void => {
     setToast(msg);
     setTimeout(() => setToast(''), 3500);
   };
 
+  /** 断线后自动重连：6 次退避，最多约 12 秒；服务端座位只保留 60 秒，够用 */
+  const autoReconnect = async (room: Room): Promise<void> => {
+    setReconnecting(true);
+    for (let i = 0; i < 6; i++) {
+      await sleep(600 + i * 500);
+      try {
+        const room2 = await new Client(endpoint()).reconnect(room.reconnectionToken);
+        bind(room2);
+        setReconnecting(false);
+        setConnError('');
+        return;
+      } catch {
+        /* 继续退避重试 */
+      }
+    }
+    setReconnecting(false);
+    sessionStorage.removeItem(TOKEN_KEY);
+    setView(null);
+    setConnError('断线太久，座位已经收了，重新进房吧');
+  };
+
   const bind = (room: Room): void => {
     roomRef.current = room;
+    sessionStorage.setItem(TOKEN_KEY, room.reconnectionToken);
     room.onMessage('view', (v: View) => {
       setView(v);
       setConnError('');
@@ -77,16 +105,41 @@ function Lobby({ me, onMe }: { me: Me; onMe: (m: Me | null) => void }): ReactEle
       }
     });
     room.onMessage('error', (e: { msg: string }) => flash(e.msg));
-    room.onLeave(() => setConnError('已断开连接，刷新页面重新进房'));
-    room.onError(() => setConnError('连接出错，请检查网络后刷新'));
+    room.onLeave((leaveCode: number) => {
+      // 1000 = 自己点的"离开"，不算掉线
+      if (leaveCode === 1000) {
+        sessionStorage.removeItem(TOKEN_KEY);
+        return;
+      }
+      void autoReconnect(room);
+    });
+    room.onError(() => setConnError('连接出错，正在尝试重连…'));
   };
 
-  const connect = async (roomCode: string): Promise<void> => {
+  // 刷新页面：如果这个标签页刚在牌桌上，直接把座位接回来
+  useEffect(() => {
+    if (restored.current) return;
+    restored.current = true;
+    const tok = sessionStorage.getItem(TOKEN_KEY);
+    if (!tok) return;
+    void (async () => {
+      try {
+        const room = await new Client(endpoint()).reconnect(tok);
+        bind(room);
+      } catch {
+        sessionStorage.removeItem(TOKEN_KEY);
+      }
+    })();
+    // bind 是稳定引用（不依赖渲染状态），这里只跑一次
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const connect = async (roomCode: string, solo = false): Promise<void> => {
     setConnError('');
     try {
       const client = new Client(endpoint());
       // 登录态走 WS 握手携带的 httpOnly cookie，这里不需要（也不该）传 token
-      const room = await client.joinOrCreate('dushi', { code: roomCode });
+      const room = await client.joinOrCreate('dushi', { code: roomCode, solo });
       bind(room);
       localStorage.setItem('dushi.code', JSON.stringify(roomCode));
       setCode(roomCode);
@@ -102,10 +155,10 @@ function Lobby({ me, onMe }: { me: Me; onMe: (m: Me | null) => void }): ReactEle
     }
   };
 
-  const createRoom = (): void => {
+  const randomCode = (): string => {
     let c = '';
     for (let i = 0; i < 6; i++) c += Math.floor(Math.random() * 10);
-    void connect(c);
+    return c;
   };
 
   const joinRoom = (): void => {
@@ -120,6 +173,7 @@ function Lobby({ me, onMe }: { me: Me; onMe: (m: Me | null) => void }): ReactEle
   const leave = (): void => {
     roomRef.current?.leave();
     roomRef.current = null;
+    sessionStorage.removeItem(TOKEN_KEY);
     setView(null);
     api.me().then(onMe).catch(() => undefined);
   };
@@ -127,6 +181,7 @@ function Lobby({ me, onMe }: { me: Me; onMe: (m: Me | null) => void }): ReactEle
   const logout = async (): Promise<void> => {
     roomRef.current?.leave();
     roomRef.current = null;
+    sessionStorage.removeItem(TOKEN_KEY);
     setView(null);
     try {
       await api.logout();
@@ -156,9 +211,10 @@ function Lobby({ me, onMe }: { me: Me; onMe: (m: Me | null) => void }): ReactEle
             </button>
           </div>
 
-          <button className="primary" onClick={createRoom}>
-            创建房间
+          <button className="primary" onClick={() => void connect(randomCode())}>
+            创建房间（联机）
           </button>
+          <button onClick={() => void connect(randomCode(), true)}>单人练习 · 打 3 个 AI</button>
           <div className="join-row">
             <input
               placeholder="6 位房号"
@@ -171,7 +227,9 @@ function Lobby({ me, onMe }: { me: Me; onMe: (m: Me | null) => void }): ReactEle
               加入
             </button>
           </div>
+          {reconnecting && <p className="hint">断线重连中…</p>}
           {connError && <p className="err">{connError}</p>}
+          <p className="hint">单人练习局不计生涯分，纯粹练手 / 熟悉牌序。</p>
           <details className="lobby-rules">
             <summary>规则速查</summary>
             <pre>{`牌大→小: 3 2 A K Q J 10 9 8 7 6 5 4
@@ -308,6 +366,7 @@ function Game({
       <header className="bar">
         <span>
           房号 <b>{view.roomCode}</b>
+          {view.practice && <em className="tag practice">练习</em>}
         </span>
         <span className="round">{view.round > 0 ? `第 ${view.round} 局` : '等待玩家'}</span>
         <button className="ghost" onClick={() => setLogOpen((o) => !o)}>
@@ -446,6 +505,7 @@ function Game({
             {view.settle.soloSeat !== null && (
               <p className="dim">独食者：{view.seats[view.settle.soloSeat].name}</p>
             )}
+            {view.practice && <p className="dim">练习局 · 不计生涯分</p>}
             {view.you === 0 && view.round < 8 && (
               <button className="primary" onClick={() => send('nextRound')}>
                 开始下一局
@@ -475,7 +535,11 @@ function SeatChip({ s, rel, isTurn }: { s: SeatView; rel: number; isTurn: boolea
   const seatName = ['', '下家', '对家', '上家'] as const;
   const empty = s.name === '空位';
   return (
-    <div className={`chip${isTurn ? ' turn' : ''}${!s.connected && !empty ? ' off' : ''}${empty ? ' empty-seat' : ''}`}>
+    <div
+      className={`chip${isTurn ? ' turn' : ''}${!s.connected && !empty ? ' off' : ''}${empty ? ' empty-seat' : ''}${
+        s.bot ? ' bot' : ''
+      }`}
+    >
       <div className="chip-head">
         <b>{s.name}</b>
         <span className="dim">{seatName[rel]}</span>
@@ -485,6 +549,7 @@ function SeatChip({ s, rel, isTurn }: { s: SeatView; rel: number; isTurn: boolea
         <span className="cards-left">{empty ? '等待加入' : `${s.cards} 张`}</span>
         {s.place !== null && <span className="place">{PLACE_NAMES[s.place]}</span>}
         {!s.connected && !empty && <span className="off-tag">断线</span>}
+        {s.bot && <span className="bot-tag">AI</span>}
       </div>
       {s.career !== null && <div className="chip-career">生涯 {s.career}</div>}
     </div>

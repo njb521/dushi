@@ -128,6 +128,12 @@ test('建号：同名（含大小写差异）不能重复注册', () => {
   assert.equal(db.findUserByName('Player_One')?.id, u.id);
 });
 
+test('查重：已注册的名字一律返回已占用，没注册的返回可用', () => {
+  assert.equal(db.usernameTaken('player_one'), true);
+  assert.equal(db.usernameTaken('PLAYER_ONE'), true, '大小写不敏感');
+  assert.equal(db.usernameTaken('还没人用过'), false);
+});
+
 test('生涯分：多局累加，胜负/独食计数正确，零和不变', () => {
   const u = db.createUser('scorer', 'hash');
   assert.ok(u);

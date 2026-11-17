@@ -57,3 +57,9 @@ export class RateLimiter {
 export const loginLimiter = new RateLimiter(5, 60_000);
 /** 注册：20 次/小时（一个 WiFi 后面可能同时注册 4–8 个号，留点余量） */
 export const registerLimiter = new RateLimiter(20, 60 * 60_000);
+/**
+ * 用户名查重：120 次/分钟/IP。
+ * 输入框边打边查，正常人是几次到十几次；这个上限只是别让人拿来批量扫库
+ * （注册接口本来也会暴露同名冲突，所以用户名列表本来就不是秘密）。
+ */
+export const checkLimiter = new RateLimiter(120, 60_000);
