@@ -14,6 +14,15 @@
     "test": "node --test packages/rules/test/",
     "test:watch": "node --test --watch packages/rules/test/",
     "play": "node packages/rules/cli/play.ts",
-    "soak": "node packages/rules/cli/sim.ts"
+    "soak": "node packages/rules/cli/sim.ts",
+    "build": "npm run build -w @dushi/web",
+    "start": "node packages/server/src/index.ts",
+    "dev:server": "npm run dev -w @dushi/server",
+    "dev:web": "npm run dev -w @dushi/web",
+    "e2e": "node packages/server/scripts/e2e.ts"
+  },
+  "allowScripts": {
+    "esbuild@0.25.12": true,
+    "msgpackr-extract@3.0.7": true
   }
 }

@@ -1,0 +1,15 @@
+{
+  "name": "@dushi/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch src/index.ts",
+    "start": "node src/index.ts"
+  },
+  "dependencies": {
+    "@dushi/rules": "*",
+    "@colyseus/core": "^0.16.26",
+    "@colyseus/ws-transport": "^0.16.5"
+  }
+}
