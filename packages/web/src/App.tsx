@@ -31,7 +31,20 @@ const stored = <T,>(k: string, def: T): T => {
 
 /** 重连凭证放 sessionStorage：同一标签页刷新能回来，关掉标签页则失效（够用且不留痕） */
 const TOKEN_KEY = 'dushi.rtok';
+/** 页面离开时打的戳 —— 座位只保留 60 秒，隔太久再回来就不必去试了 */
+const LEFT_AT_KEY = 'dushi.leftat';
+/**
+ * 预留席位的保留时长是 60 秒（服务端 `allowReconnection(client, 60)`），
+ * 而且是**从连接断掉那一刻**开始算，不是从发 token 的时候算。
+ * 所以这里不能用"token 多老"来判断，只能用"我上次离开页面是什么时候"。
+ * 留 5 秒余量，避免卡在边界上白试一次。
+ */
+const RECONNECT_WINDOW_MS = 55_000;
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/** Colyseus 的错误码：这几种是"座位确定没了"，重试只会让服务端多刷几行 ❌ */
+const GONE_CODES = new Set([4212 /* room disposed */, 4213 /* unhandled */, 4214 /* expired */]);
+const isGone = (e: unknown): boolean => GONE_CODES.has((e as { code?: number })?.code ?? 0);
 
 export function App(): ReactElement {
   const [me, setMe] = useState<Me | null | undefined>(undefined);
@@ -86,9 +99,14 @@ function Lobby({ me, onMe }: { me: Me; onMe: (m: Me | null) => void }): ReactEle
     localStorage.setItem('dushi.rules', JSON.stringify(rules));
   }, [rules]);
 
-  /** 断线后自动重连：6 次退避，最多约 12 秒；服务端座位只保留 60 秒，够用 */
+  /**
+   * 断线后自动重连：网络类错误退避重试（6 次，约 12 秒）；
+   * 但"座位确定没了"（4212/4213/4214）不再重试 —— 那个 token 是一次性的，
+   * 服务端已经不认了，再试 5 次只会在命令行刷 5 行 "reconnection token invalid or expired"。
+   */
   const autoReconnect = async (room: Room): Promise<void> => {
     setReconnecting(true);
+    let gone = false;
     for (let i = 0; i < 6; i++) {
       await sleep(600 + i * 500);
       try {
@@ -97,14 +115,17 @@ function Lobby({ me, onMe }: { me: Me; onMe: (m: Me | null) => void }): ReactEle
         setReconnecting(false);
         setConnError('');
         return;
-      } catch {
-        /* 继续退避重试 */
+      } catch (e) {
+        if (isGone(e)) {
+          gone = true;
+          break;
+        }
       }
     }
     setReconnecting(false);
     sessionStorage.removeItem(TOKEN_KEY);
     setView(null);
-    setConnError('断线太久，座位已经收了，重新进房吧');
+    setConnError(gone ? '座位已经收了（离开超过 60 秒），重新进房吧' : '断线太久，座位已经收了，重新进房吧');
   };
 
   const bind = (room: Room): void => {
@@ -131,22 +152,51 @@ function Lobby({ me, onMe }: { me: Me; onMe: (m: Me | null) => void }): ReactEle
     room.onError(() => setConnError('连接出错，正在尝试重连…'));
   };
 
-  // 刷新页面：如果这个标签页刚在牌桌上，直接把座位接回来
+  // 刷新页面：如果这个标签页刚在牌桌上，直接把座位接回来。
+  // 但只在这个窗口还开着的时候试 —— 关掉标签页过夜再打开，座位早没了，
+  // 硬试一次只会让服务端打一行 "reconnection token invalid or expired"。
   useEffect(() => {
     if (restored.current) return;
     restored.current = true;
     const tok = sessionStorage.getItem(TOKEN_KEY);
     if (!tok) return;
+    const leftAt = Number(sessionStorage.getItem(LEFT_AT_KEY) ?? 0);
+    if (leftAt > 0 && Date.now() - leftAt > RECONNECT_WINDOW_MS) {
+      sessionStorage.removeItem(TOKEN_KEY);
+      setConnError('上次那桌已经散了（离开超过 60 秒），重新进房吧');
+      return;
+    }
     void (async () => {
       try {
         const room = await new Client(endpoint()).reconnect(tok);
         bind(room);
       } catch {
         sessionStorage.removeItem(TOKEN_KEY);
+        setConnError('上次那桌已经散了，重新进房吧');
       }
     })();
     // bind 是稳定引用（不依赖渲染状态），这里只跑一次
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 记下"页面要走"的时刻，供上面那个恢复逻辑判断窗口是否还开着
+  useEffect(() => {
+    const mark = (): void => {
+      try {
+        sessionStorage.setItem(LEFT_AT_KEY, String(Date.now()));
+      } catch {
+        /* 隐私模式下 sessionStorage 可能不可写，忽略 */
+      }
+    };
+    const onHide = (): void => {
+      if (document.visibilityState === 'hidden') mark();
+    };
+    window.addEventListener('pagehide', mark);
+    document.addEventListener('visibilitychange', onHide);
+    return () => {
+      window.removeEventListener('pagehide', mark);
+      document.removeEventListener('visibilitychange', onHide);
+    };
   }, []);
 
   const connect = async (roomCode: string, opts: { solo?: boolean } = {}): Promise<void> => {
