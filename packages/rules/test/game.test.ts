@@ -180,3 +180,46 @@ test('最后一张不是身份牌：名次照常', () => {
   assert.deepEqual(st.places, [0, 1, 2, 3]);
   assert.deepEqual(settle(st).deltas, [12, -4, -4, -4]);
 });
+
+// ── 暗独食的信息隔离（§5.2）──────────────────────────────
+// 公共日志三个人都能看到。写上"某某不表态"等于开局第一秒点名独食者。
+
+/** 找一个真的会进宣告阶段的种子 */
+function soloGame() {
+  for (let seed = 1; seed < 2000; seed++) {
+    const st = createGame(['A', 'B', 'C', 'D'], seed);
+    if (st.phase === 'declaring') return st;
+  }
+  throw new Error('2000 个种子里没有独食局');
+}
+
+test('暗独食不写日志：公共记录里不能出现独食者的名字', () => {
+  const st = soloGame();
+  const solo = st.soloSeat!;
+  const name = st.seats[solo].name;
+  const before = st.log.length;
+
+  declare(st, 'none');
+
+  assert.equal(st.log.length, before, '不表态不该往公共日志里写任何东西');
+  assert.ok(!st.log.some((l) => l.includes(name)), '公共日志里不得出现独食者的名字');
+  assert.equal(st.phase, 'playing', '不表态后照常开打');
+});
+
+test('摆牌照常留痕：手牌本来就亮给三家了', () => {
+  const st = soloGame();
+  const solo = st.soloSeat!;
+  declare(st, 'baiPai');
+  assert.ok(
+    st.log.some((l) => l.includes(st.seats[solo].name) && l.includes('摆牌')),
+    '摆牌是公开行为，该留痕',
+  );
+});
+
+test('投降也留痕（本局直接结束，独食者身份已随结算公开）', () => {
+  const st = soloGame();
+  const solo = st.soloSeat!;
+  declare(st, 'surrender');
+  assert.equal(st.phase, 'settling');
+  assert.ok(st.log.some((l) => l.includes(st.seats[solo].name) && l.includes('投降')));
+});

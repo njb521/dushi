@@ -151,11 +151,12 @@ export function declare(state: GameState, choice: DeclareChoice): void {
   state.currentSeat = soloLeads ? state.soloSeat : state.initialLeader;
   state.trick = null;
   state.passed = [false, false, false, false];
-  state.log.push(
-    state.baiPai
-      ? `${state.seats[state.soloSeat].name} 摆牌，手牌公开`
-      : `${state.seats[state.soloSeat].name} 不表态`,
-  );
+  // "不表态"绝不能写日志：这份日志是三个人都能看到的公共信息，
+  // 一旦写上"某某不表态"，等于开局第一秒就把暗独食者点名了。
+  // 摆牌本来就是公开行为（手牌都亮出来了），只有它该留痕。
+  if (state.baiPai) {
+    state.log.push(`${state.seats[state.soloSeat].name} 摆牌，手牌公开`);
+  }
 }
 
 function handContainsAll(hand: readonly Card[], cards: readonly Card[]): boolean {

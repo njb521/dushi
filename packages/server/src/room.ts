@@ -442,7 +442,7 @@ export class DushiRoom extends Room {
     this.declareTimer = setTimeout(() => {
       if (this.g.state?.phase !== 'declaring') return;
       declare(this.g.state, 'none');
-      this.g.state.log.push(bot ? 'AI 不表态，暗打' : '独食者超时未表态，按不表态处理');
+      // 超时也不写日志：写"独食者超时未表态"同样等于点名（全场只有一个人在等这个窗口）
       this.pushAll();
       this.scheduleBotIfNeeded();
     }, delay);

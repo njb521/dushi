@@ -264,6 +264,12 @@ async function main(): Promise<void> {
     if (/(?:[♠♥♣♦])(?:10|[2-9AJQK])/.test(text)) {
       leaks.push(`座位 ${who}：非牌面字段出现牌码 → ${text.slice(0, 160)}`);
     }
+    // 公共日志一旦出现"谁表了态"，暗独食的身份就当场曝光了（三个人都收得到这份日志）
+    for (const line of v.eventLog) {
+      if (/不表态|未表态|暗打/.test(line)) {
+        leaks.push(`座位 ${who}：公共日志泄露独食表态 → ${line}`);
+      }
+    }
     if (v.phase === 'settling' && v.settle && !settledIdx.has(who)) {
       settledIdx.add(who);
       resolvers[who](v);

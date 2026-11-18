@@ -7,7 +7,7 @@
  *  - 别人的手牌永远只以数量形式出现
  */
 
-import type { Card } from '@dushi/rules';
+import type { Card, GameState } from '@dushi/rules';
 import { matchProgress, patternName } from '@dushi/rules';
 import type { MatchProgress } from '@dushi/rules';
 import type { GameRuntime } from './room.ts';
@@ -80,11 +80,24 @@ export interface View {
   readonly rules: PublicRules & { summary: string };
 }
 
+/**
+ * 对外可见的阶段。
+ *
+ * 独食宣告阶段只给"被问的那个人"看到。其余三人只要看到 `declaring`，
+ * 就等于知道"本局存在暗独食" —— 而一张身份牌都没拿到的人是推不出这件事的
+ * （他既不知道 ♠3、♠A 分在两家还是同在一家）。所以对外一律报 `playing`，
+ * `turn` 此时为 null，看不出来有什么区别。
+ */
+export function publicPhase(st: GameState | null, seat: number): Phase {
+  if (!st) return 'waiting';
+  if (st.phase !== 'declaring') return st.phase;
+  return st.soloSeat === seat ? 'declaring' : 'playing';
+}
+
 export function buildView(g: GameRuntime, seat: number): View {
   const st = g.state;
   const me = st?.seats[seat];
-  const phase: Phase =
-    g.phase === 'waiting' || !st ? 'waiting' : st.phase === 'declaring' ? 'declaring' : st.phase === 'settling' ? 'settling' : 'playing';
+  const phase: Phase = g.phase === 'waiting' || !st ? 'waiting' : publicPhase(st, seat);
 
   const seats: SeatView[] = st
     ? st.seats.map((s) => ({
