@@ -8,8 +8,11 @@
  */
 
 import type { Card } from '@dushi/rules';
-import { patternName } from '@dushi/rules';
+import { matchProgress, patternName } from '@dushi/rules';
+import type { MatchProgress } from '@dushi/rules';
 import type { GameRuntime } from './room.ts';
+import { publicRules, rulesSummary } from './rules-options.ts';
+import type { PublicRules } from './rules-options.ts';
 
 export interface SeatView {
   readonly seat: number;
@@ -71,6 +74,10 @@ export interface View {
   readonly aiFill: boolean;
   /** 还空着几个座位（AI 坐的不算） */
   readonly emptySeats: number;
+  /** 赛制进度（顶部显示「第 3/8 局」或「32/50 分」） */
+  readonly match: MatchProgress;
+  /** 可编辑房规 + 一句话摘要（等待室展示、房主修改用） */
+  readonly rules: PublicRules & { summary: string };
 }
 
 export function buildView(g: GameRuntime, seat: number): View {
@@ -156,5 +163,7 @@ export function buildView(g: GameRuntime, seat: number): View {
     hasAi: g.roundHasAi(),
     aiFill: g.aiFill,
     emptySeats: g.emptySeats(),
+    match: matchProgress(st?.round ?? 0, st?.scores ?? [0, 0, 0, 0], g.rules, g.matchOver),
+    rules: { ...publicRules(g.rules), summary: rulesSummary(g.rules) },
   };
 }

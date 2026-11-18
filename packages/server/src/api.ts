@@ -18,7 +18,9 @@ import {
   findUserByName,
   getStats,
   leaderboard,
+  rankOf,
   recentRounds,
+  summaryOf,
   touchLogin,
   updatePassword,
   usernameTaken,
@@ -166,6 +168,8 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
         return await changePassword(req, res);
       case 'GET /api/leaderboard':
         return board(req, res);
+      case 'GET /api/stats/summary':
+        return statsSummary(req, res);
       case 'GET /api/history':
         return history(req, res);
       default:
@@ -326,13 +330,45 @@ async function changePassword(req: IncomingMessage, res: ServerResponse): Promis
 function board(req: IncomingMessage, res: ServerResponse): boolean {
   const user = requireUser(req, res);
   if (!user) return true;
-  json(res, 200, { rows: leaderboard(10) });
+  const stats = getStats(user.id);
+  json(res, 200, {
+    rows: leaderboard(20),
+    // 没进前 20 也能看到自己排第几
+    me: {
+      rank: rankOf(user.id),
+      username: user.username,
+      totalScore: stats.total_score,
+      games: stats.games,
+      wins: stats.wins,
+    },
+  });
   return true;
 }
 
+/** 战绩页顶部概览：胜率、最高单局、最近 7 天走势 */
+function statsSummary(req: IncomingMessage, res: ServerResponse): boolean {
+  const user = requireUser(req, res);
+  if (!user) return true;
+  json(res, 200, summaryOf(user.id));
+  return true;
+}
+
+/** 最近对局：游标分页（before = 上一页最后一条的 id） */
 function history(req: IncomingMessage, res: ServerResponse): boolean {
   const user = requireUser(req, res);
   if (!user) return true;
-  json(res, 200, { rows: recentRounds(user.id, 20) });
+
+  const url = new URL(req.url ?? '/', 'http://localhost');
+  const limitRaw = Number(url.searchParams.get('limit'));
+  const limit = Number.isFinite(limitRaw) ? Math.min(50, Math.max(1, Math.round(limitRaw))) : 20;
+  const beforeRaw = url.searchParams.get('before');
+  const before = beforeRaw !== null && Number.isFinite(Number(beforeRaw)) ? Number(beforeRaw) : undefined;
+
+  const rows = recentRounds(user.id, limit, before);
+  json(res, 200, {
+    rows,
+    // 拿满一页才可能有下一页；否则前端不必再请求
+    nextCursor: rows.length === limit ? rows[rows.length - 1].id : null,
+  });
   return true;
 }

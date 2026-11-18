@@ -332,15 +332,83 @@ export interface MatchHistoryRow {
   room_code: string;
 }
 
-export function recentRounds(userId: number, limit = 20): MatchHistoryRow[] {
+/**
+ * 最近对局（按 match_players.id 倒序）。
+ * 用游标 `before` 而不是 offset：翻页时新记录会不断插到最前面，offset 会导致重复/漏条。
+ */
+export function recentRounds(userId: number, limit = 20, before?: number): MatchHistoryRow[] {
+  const base = `SELECT mp.id, mp.match_id, mp.round_no, mp.seat, mp.place, mp.is_solo, mp.declared,
+                       mp.delta, mp.created_at, m.room_code
+                  FROM match_players mp JOIN matches m ON m.id = mp.match_id
+                 WHERE mp.user_id = ?`;
+  if (before !== undefined) {
+    return getDb()
+      .prepare(`${base} AND mp.id < ? ORDER BY mp.id DESC LIMIT ?`)
+      .all(userId, before, limit) as MatchHistoryRow[];
+  }
   return getDb()
-    .prepare(
-      `SELECT mp.id, mp.match_id, mp.round_no, mp.seat, mp.place, mp.is_solo, mp.declared,
-              mp.delta, mp.created_at, m.room_code
-         FROM match_players mp JOIN matches m ON m.id = mp.match_id
-        WHERE mp.user_id = ?
-        ORDER BY mp.id DESC
-        LIMIT ?`,
-    )
+    .prepare(`${base} ORDER BY mp.id DESC LIMIT ?`)
     .all(userId, limit) as MatchHistoryRow[];
+}
+
+export interface StatsSummary {
+  totalScore: number;
+  games: number;
+  wins: number;
+  winRate: number;
+  soloGames: number;
+  soloWins: number;
+  /** 生涯最高单局 */
+  bestDelta: number;
+  /** 最近 7 天每天的分变化（没有记录的日子不补 0） */
+  last7d: { date: string; delta: number }[];
+}
+
+/** 战绩页顶部的概览 */
+export function summaryOf(userId: number): StatsSummary {
+  const conn = getDb();
+  const s = getStats(userId);
+  const best = conn.prepare('SELECT MAX(delta) AS m FROM match_players WHERE user_id = ?').get(userId) as
+    | { m: number | null }
+    | undefined;
+  const since = nowSec() - 7 * 24 * 3600;
+  const days = conn
+    .prepare(
+      `SELECT strftime('%m-%d', created_at, 'unixepoch', 'localtime') AS date, SUM(delta) AS delta
+         FROM match_players
+        WHERE user_id = ? AND created_at >= ?
+        GROUP BY date
+        ORDER BY date`,
+    )
+    .all(userId, since) as { date: string; delta: number }[];
+
+  return {
+    totalScore: s.total_score,
+    games: s.games,
+    wins: s.wins,
+    winRate: s.games > 0 ? Math.round((s.wins / s.games) * 1000) / 10 : 0,
+    soloGames: s.solo_games,
+    soloWins: s.solo_wins,
+    bestDelta: num(best?.m ?? 0),
+    last7d: days.map((d) => ({ date: d.date, delta: num(d.delta) })),
+  };
+}
+
+/**
+ * 我的排名（1 起）。没打过牌返回 null —— "第 0 名"没有意义。
+ * 排序口径必须和 leaderboard() 一致：先比总分，再比胜场。
+ */
+export function rankOf(userId: number): number | null {
+  const conn = getDb();
+  const me = conn.prepare('SELECT total_score, games, wins FROM user_stats WHERE user_id = ?').get(userId) as
+    | { total_score: number; games: number; wins: number }
+    | undefined;
+  if (!me || me.games === 0) return null;
+  const row = conn
+    .prepare(
+      `SELECT COUNT(*) AS n FROM user_stats
+        WHERE games > 0 AND (total_score > ? OR (total_score = ? AND wins > ?))`,
+    )
+    .get(me.total_score, me.total_score, me.wins) as { n: number };
+  return num(row.n) + 1;
 }

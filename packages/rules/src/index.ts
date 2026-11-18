@@ -3,4 +3,5 @@ export * from './pattern.ts';
 export * from './plays.ts';
 export * from './rules.ts';
 export * from './game.ts';
+export * from './match.ts';
 export * from './ai.ts';

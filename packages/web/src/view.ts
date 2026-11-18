@@ -61,6 +61,30 @@ export interface View {
   aiFill: boolean;
   /** 还空着几个座位（AI 坐的不算） */
   emptySeats: number;
+  /** 赛制进度 */
+  match: {
+    mode: 'rounds' | 'targetScore' | 'endless';
+    round: number;
+    rounds: number;
+    target: number;
+    totals: number[];
+    over: boolean;
+    label: string;
+  };
+  /** 可编辑房规 + 一句话摘要 */
+  rules: RuleDraft & { summary: string };
+}
+
+/** 建房面板上与房规相关的字段（与服务端 rules-options.ts 的 PublicRules 对齐） */
+export interface RuleDraft {
+  matchMode: 'rounds' | 'targetScore' | 'endless';
+  rounds: number;
+  targetScore: number;
+  tripsOnlyWhenThreeLeft: boolean;
+  mustPlayWhenReporting: boolean;
+  baiPaiLeadsFirst: boolean;
+  baiPaiMultiplier: number;
+  allowSurrender: boolean;
 }
 
 export const SUIT_CHAR: Record<Suit, string> = { S: '♠', H: '♥', C: '♣', D: '♦' };

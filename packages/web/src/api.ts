@@ -43,6 +43,47 @@ export interface NameCheck {
   error?: string;
 }
 
+export interface RoundRow {
+  id: number;
+  match_id: number;
+  round_no: number;
+  seat: number;
+  place: number | null;
+  is_solo: number;
+  declared: string | null;
+  delta: number;
+  created_at: number;
+  room_code: string;
+}
+
+export interface HistoryPage {
+  rows: RoundRow[];
+  nextCursor: number | null;
+}
+
+export interface Summary {
+  totalScore: number;
+  games: number;
+  wins: number;
+  winRate: number;
+  soloGames: number;
+  soloWins: number;
+  bestDelta: number;
+  last7d: { date: string; delta: number }[];
+}
+
+export interface BoardRow {
+  username: string;
+  total_score: number;
+  games: number;
+  wins: number;
+}
+
+export interface Board {
+  rows: BoardRow[];
+  me: { rank: number | null; username: string; totalScore: number; games: number; wins: number };
+}
+
 export const api = {
   me: (): Promise<Me> => call<Me>('/api/me'),
   register: (username: string, password: string): Promise<Me> =>
@@ -53,6 +94,11 @@ export const api = {
   /** 注册页边打边查：这个用户名能不能用 */
   checkUsername: (name: string): Promise<NameCheck> =>
     call<NameCheck>(`/api/username-available?name=${encodeURIComponent(name)}`),
+  /** 最近对局（游标分页，before = 上一页最后一条 id） */
+  history: (before?: number): Promise<HistoryPage> =>
+    call<HistoryPage>(`/api/history${before ? `?before=${before}` : ''}`),
+  summary: (): Promise<Summary> => call<Summary>('/api/stats/summary'),
+  leaderboard: (): Promise<Board> => call<Board>('/api/leaderboard'),
   changePassword: (oldPassword: string, newPassword: string): Promise<Me> =>
     call<Me>('/api/password', {
       method: 'POST',

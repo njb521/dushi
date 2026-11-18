@@ -5,8 +5,10 @@ import type { Room } from 'colyseus.js';
 import { classify, legalPlays, sortByPower } from '@dushi/rules';
 import type { Card } from '@dushi/rules';
 import { SUIT_CHAR, isRed, cardCode, PLACE_NAMES } from './view.ts';
-import type { View, SeatView } from './view.ts';
+import type { View, SeatView, RuleDraft } from './view.ts';
 import { Auth } from './Auth.tsx';
+import { DEFAULT_RULES, RulesPanel, draftSummary } from './RulesPanel.tsx';
+import { Stats } from './Stats.tsx';
 import { api } from './api.ts';
 import type { Me } from './api.ts';
 
@@ -64,6 +66,9 @@ function Lobby({ me, onMe }: { me: Me; onMe: (m: Me | null) => void }): ReactEle
   const [reconnecting, setReconnecting] = useState(false);
   /** 建房时要不要"人不够用 AI 补位" */
   const [aiFill, setAiFill] = useState(stored('dushi.aifill', false));
+  /** 建房房规：上次用的会记住 */
+  const [rules, setRules] = useState<RuleDraft>(stored('dushi.rules', DEFAULT_RULES));
+  const [showStats, setShowStats] = useState(false);
   const roomRef = useRef<Room | null>(null);
   const settledRound = useRef(0);
   const restored = useRef(false);
@@ -76,6 +81,10 @@ function Lobby({ me, onMe }: { me: Me; onMe: (m: Me | null) => void }): ReactEle
   useEffect(() => {
     localStorage.setItem('dushi.aifill', JSON.stringify(aiFill));
   }, [aiFill]);
+
+  useEffect(() => {
+    localStorage.setItem('dushi.rules', JSON.stringify(rules));
+  }, [rules]);
 
   /** 断线后自动重连：6 次退避，最多约 12 秒；服务端座位只保留 60 秒，够用 */
   const autoReconnect = async (room: Room): Promise<void> => {
@@ -150,6 +159,7 @@ function Lobby({ me, onMe }: { me: Me; onMe: (m: Me | null) => void }): ReactEle
         code: roomCode,
         solo,
         aiFill: !solo && aiFill,
+        rules: solo ? undefined : rules,
       });
       bind(room);
       localStorage.setItem('dushi.code', JSON.stringify(roomCode));
@@ -217,6 +227,9 @@ function Lobby({ me, onMe }: { me: Me; onMe: (m: Me | null) => void }): ReactEle
             <span className="me-career">
               生涯 <b>{me.stats.totalScore}</b> 分 · {me.stats.games} 局 {me.stats.wins} 胜
             </span>
+            <button className="ghost" onClick={() => setShowStats(true)}>
+              战绩
+            </button>
             <button className="ghost" onClick={() => void logout()}>
               退出
             </button>
@@ -229,6 +242,11 @@ function Lobby({ me, onMe }: { me: Me; onMe: (m: Me | null) => void }): ReactEle
             <input type="checkbox" checked={aiFill} onChange={(e) => setAiFill(e.target.checked)} />
             <span>人不够时让 AI 补位（有空位就能开打）</span>
           </label>
+          <details className="rule-box">
+            <summary>房规：{draftSummary(rules)}</summary>
+            <RulesPanel value={rules} onChange={setRules} />
+            <p className="hint">房规在开局后锁定，想改请开新房。</p>
+          </details>
           <button onClick={() => void connect(randomCode(), { solo: true })}>单人练习 · 打 3 个 AI</button>
           <div className="join-row">
             <input
@@ -258,6 +276,7 @@ function Lobby({ me, onMe }: { me: Me; onMe: (m: Me | null) => void }): ReactEle
 ♠3+♠A 同持=独食(1v3)；头游+12 二游-6 三四游-12`}</pre>
           </details>
         </div>
+        {showStats && <Stats onClose={() => setShowStats(false)} />}
       </div>
     );
   }
@@ -319,6 +338,7 @@ function Game({
   const [picked, setPicked] = useState<number[]>([]);
   const [hintIdx, setHintIdx] = useState(0);
   const [logOpen, setLogOpen] = useState(false);
+  const [ruleEdit, setRuleEdit] = useState(false);
   const me = view.seats[view.you];
   const hand = view.yourHand ?? [];
 
@@ -385,7 +405,7 @@ function Game({
           {view.practice && <em className="tag practice">练习</em>}
           {view.hasAi && !view.practice && <em className="tag practice">有 AI</em>}
         </span>
-        <span className="round">{view.round > 0 ? `第 ${view.round} 局` : '等待玩家'}</span>
+        <span className="round">{view.round > 0 ? view.match.label : '等待玩家'}</span>
         <button className="ghost" onClick={() => setLogOpen((o) => !o)}>
           记录
         </button>
@@ -528,13 +548,23 @@ function Game({
             {(view.practice || view.hasAi) && (
               <p className="dim">{view.practice ? '练习局' : '本局有 AI 补位'} · 不计生涯分</p>
             )}
-            {view.you === 0 && view.round < 8 && (
+            {!view.match.over && view.you === 0 && (
               <button className="primary" onClick={() => send('nextRound')}>
                 开始下一局
               </button>
             )}
-            {view.you !== 0 && view.round < 8 && <p className="dim">等待房主开始下一局…</p>}
-            {view.round >= 8 && <p className="primary-text">🏆 全场结束，总分见上！</p>}
+            {!view.match.over && view.you !== 0 && <p className="dim">等待房主开始下一局…</p>}
+            {!view.match.over && view.you === 0 && view.match.mode === 'endless' && (
+              <button onClick={() => send('endMatch')}>结束本场</button>
+            )}
+            {view.match.over && (
+              <>
+                <p className="primary-text">🏆 本场结束（{view.match.label}），总分见上！</p>
+                <button className="primary" onClick={onLeave}>
+                  返回大厅
+                </button>
+              </>
+            )}
           </div>
         </div>
       )}
@@ -550,6 +580,20 @@ function Game({
                 .map((s) => s.name)
                 .join('、')}
             </p>
+
+            <p className="dim">房规：{view.rules.summary}</p>
+            {view.you === 0 && view.round === 0 ? (
+              <>
+                <button className="ghost" onClick={() => setRuleEdit((v) => !v)}>
+                  {ruleEdit ? '收起房规' : '改房规'}
+                </button>
+                {ruleEdit && (
+                  <RulesPanel value={view.rules} onChange={(next) => send('setRules', { rules: next })} />
+                )}
+              </>
+            ) : (
+              view.round > 0 && <p className="hint">房规已锁定（开局后不可改）</p>
+            )}
 
             {view.emptySeats === 0 ? (
               <button className="primary" onClick={() => send('ready', { ready: true })}>

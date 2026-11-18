@@ -126,6 +126,13 @@ async function careerOf(token: string): Promise<{ totalScore: number; games: num
   return body.stats;
 }
 
+/** 带会话 cookie 的 GET（战绩接口都要求登录） */
+async function apiGet(token: string, path: string): Promise<unknown> {
+  const res = await fetch(`${BASE}${path}`, { headers: { cookie: `dushi_session=${token}` } });
+  if (!res.ok) throw new Error(`${path} → ${res.status}`);
+  return res.json();
+}
+
 /**
  * 一个人把一局打完（其余座位是 AI）：只按视图行事，等价于真人操作。
  * 单人练习和"AI 补位"两条路径都用它，省得写两套一模一样的策略。
@@ -536,6 +543,100 @@ async function main(): Promise<void> {
   console.log(`✓ 局间进来的朋友接管了一个 AI 座位（剩 ${botsLeft} 个 AI）`);
   takerRoom.leave();
   fillRoom.leave();
+
+  // ── M4：赛制可配置 ─────────────────────────────────────
+  const expectError = (room: any, send: () => void, what: string): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`${what}：没收到错误消息`)), 2000);
+      room.onMessage('error', function onErr(e: { msg: string }) {
+        clearTimeout(timer);
+        resolve(e.msg);
+      });
+      send();
+    });
+
+  // ① 自定义 2 局制：打完第 2 局自动结束
+  const rulesCode = String(500_000 + Math.floor(Math.random() * 400_000));
+  const rulesRoom = await new Client(`ws://127.0.0.1:${PORT}`).joinOrCreate('dushi', {
+    code: rulesCode,
+    token: accounts[3].token,
+    solo: true,
+    rules: { matchMode: 'rounds', rounds: 2 },
+  });
+  const rulesFirst = await new Promise<View>((resolve) => {
+    rulesRoom.onMessage('view', (v: View) => resolve(v));
+  });
+  if (rulesFirst.match.mode !== 'rounds' || rulesFirst.match.rounds !== 2) {
+    await fail(`自定义赛制没生效：${JSON.stringify(rulesFirst.match)}`);
+  }
+
+  const round1 = await driveAlone(rulesRoom, rulesFirst, '自定义 2 局制 · 第 1 局');
+  if (round1.match.over) await fail('第 1 局就判结束了（应该是 2 局制）');
+  rulesRoom.send('nextRound');
+  await sleep(600);
+  const round2 = await driveAlone(rulesRoom, null, '自定义 2 局制 · 第 2 局');
+  if (!round2.match.over) await fail(`第 2 局打完没有结束：${JSON.stringify(round2.match)}`);
+  const rejectMsg = await expectError(rulesRoom, () => rulesRoom.send('nextRound'), '结束后再开下一局');
+  if (!/结束/.test(rejectMsg)) await fail(`结束后还能开下一局：${rejectMsg}`);
+  console.log(`✓ 自定义 2 局制：第 2 局打完自动结束（${round2.match.label}），且拒绝再开`);
+  rulesRoom.leave();
+
+  // ② 无限赛制 + 房主喊停
+  const endlessCode = String(600_000 + Math.floor(Math.random() * 300_000));
+  const endlessRoom = await new Client(`ws://127.0.0.1:${PORT}`).joinOrCreate('dushi', {
+    code: endlessCode,
+    token: accounts[2].token,
+    solo: true,
+    rules: { matchMode: 'endless' },
+  });
+  const endlessFirst = await new Promise<View>((resolve) => {
+    endlessRoom.onMessage('view', (v: View) => resolve(v));
+  });
+  if (endlessFirst.match.label !== '打到喊停') await fail(`无限赛制文案不对：${endlessFirst.match.label}`);
+  const endlessRound = await driveAlone(endlessRoom, endlessFirst, '无限赛制 · 第 1 局');
+  if (endlessRound.match.over) await fail('无限赛制不该自动结束');
+  let endlessLatest: View = endlessRound;
+  endlessRoom.onMessage('view', (v: View) => {
+    endlessLatest = v;
+  });
+  endlessRoom.send('endMatch');
+  await sleep(500);
+  if (!endlessLatest.match.over) await fail('房主喊停没生效');
+  console.log('✓ 无限赛制：第 1 局后房主喊停，本场结束');
+  endlessRoom.leave();
+
+  // ③ 目标分制：这里只验接线（打的局数不确定，结束判定由单测覆盖）
+  const targetCode = String(700_000 + Math.floor(Math.random() * 200_000));
+  const targetRoom = await new Client(`ws://127.0.0.1:${PORT}`).joinOrCreate('dushi', {
+    code: targetCode,
+    token: accounts[0].token,
+    solo: true,
+    rules: { matchMode: 'targetScore', targetScore: 10 },
+  });
+  const targetFirst = await new Promise<View>((resolve) => {
+    targetRoom.onMessage('view', (v: View) => resolve(v));
+  });
+  if (targetFirst.match.mode !== 'targetScore' || targetFirst.match.target !== 10) {
+    await fail(`目标分制没接线：${JSON.stringify(targetFirst.match)}`);
+  }
+  if (!/\/10 分$/.test(targetFirst.match.label)) await fail(`目标分制文案不对：${targetFirst.match.label}`);
+  console.log(`✓ 目标分制接线正常：${targetFirst.match.label}`);
+  targetRoom.leave();
+
+  // ④ 战绩接口：上面打的局应该都能查到
+  const hist = (await apiGet(accounts[3].token, '/api/history')) as {
+    rows: { round_no: number; delta: number }[];
+    nextCursor: number | null;
+  };
+  if (!hist.rows || hist.rows.length === 0) await fail('战绩没有记录');
+  const summary = (await apiGet(accounts[3].token, '/api/stats/summary')) as { games: number; winRate: number };
+  if (typeof summary.winRate !== 'number') await fail('概览接口字段不全');
+  const boardRes = (await apiGet(accounts[3].token, '/api/leaderboard')) as {
+    rows: unknown[];
+    me: { rank: number | null };
+  };
+  if (!boardRes.me || !Array.isArray(boardRes.rows)) await fail('排行榜接口结构不对');
+  console.log(`✓ 战绩接口：history ${hist.rows.length} 条 / 概览 / 排行榜 rank=${boardRes.me.rank}`);
 
   for (const r of rooms) {
     try {

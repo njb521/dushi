@@ -32,15 +32,16 @@ import {
   settle,
   applyScores,
   validatePlay,
+  matchOver,
 } from '@dushi/rules';
 import { buildView } from './views.ts';
+import { publicRules, rulesSummary, sanitizeRules } from './rules-options.ts';
 import type { View } from './views.ts';
 import { COOKIE_NAME, parseCookies, resolveSession } from './auth/session.ts';
 import type { SessionUser } from './auth/session.ts';
 import { careerOf, createMatch, endMatch, recordRound } from './db.ts';
 import type { RoundResultInput } from './db.ts';
 
-const ROUNDS = 8;
 /** 人类掉线后的托管节奏：慢一点，既给人重连的时间，也不至于把牌桌卡死 */
 const TAKEOVER_DELAY_MS = 4_000;
 /** 单人模式的 AI 出牌节奏：快，像坐在对面等你 */
@@ -88,11 +89,13 @@ export class GameRuntime {
   /** 本局生涯分变化（seat → Δ），结算弹窗用；练习局/有 AI 的局恒为 0 */
   careerDelta: number[] = [0, 0, 0, 0];
   phase: 'waiting' | 'ingame' = 'waiting';
+  /** 本场是否已结束（赛制到线 / 房主喊停） */
+  matchOver = false;
   hostSeat = 0;
 
   constructor(
     roomCode: string,
-    rules = makeRules({ matchMode: 'rounds', rounds: ROUNDS }),
+    rules: ReturnType<typeof makeRules> = makeRules(),
     practice = false,
     aiFill = false,
   ) {
@@ -120,10 +123,14 @@ export class GameRuntime {
     return this.practice || this.roundBots.some(Boolean);
   }
 
-  /** 空座位数（AI 不算空，除非允许顶掉） */
+  /**
+   * 真·空位数量（**AI 坐着的位子不算空**）。
+   * 这个数字前端用来判断"是不是还差人"：AI 补位满座的房间应该显示"人齐了"，
+   * 而不是"还差 3 人"——AI 没有 Client，但这个位子上是有人的。
+   */
   emptySeats(): number {
     let n = 0;
-    for (let s = 0; s < 4; s++) if (this.clients[s] === null) n++;
+    for (let s = 0; s < 4; s++) if (!this.occupied(s)) n++;
     return n;
   }
 
@@ -172,13 +179,14 @@ export class DushiRoom extends Room {
   private g!: GameRuntime;
   private declareTimer: ReturnType<typeof setTimeout> | null = null;
   private botTimer: ReturnType<typeof setTimeout> | null = null;
-  private roundOverTimer: ReturnType<typeof setTimeout> | null = null;
 
   override onCreate(options: Record<string, unknown>): void {
     const code = typeof options.code === 'string' && /^\d{6}$/.test(options.code) ? options.code : randomCode();
     const solo = options.solo === true;
+    // 房规只认白名单收敛后的结果（见 rules-options.ts）
+    const rules = sanitizeRules(options.rules);
     // 单人练习房天然就是"AI 补位"满座，不需要再开开关
-    this.g = new GameRuntime(code, undefined, solo, solo || options.aiFill === true);
+    this.g = new GameRuntime(code, rules, solo, solo || options.aiFill === true);
 
     this.onMessage('ready', (client, msg) => this.handleReady(client, msg));
     this.onMessage('play', (client, msg) => this.handlePlay(client, msg as PlayMsg));
@@ -186,6 +194,8 @@ export class DushiRoom extends Room {
     this.onMessage('declare', (client, msg) => this.handleDeclare(client, msg as DeclareMsg));
     this.onMessage('nextRound', (client) => this.handleNextRound(client));
     this.onMessage('fillAi', (client) => this.handleFillAi(client));
+    this.onMessage('setRules', (client, msg) => this.handleSetRules(client, msg));
+    this.onMessage('endMatch', (client) => this.handleEndMatch(client));
     this.onMessage('chat', (client, msg) => this.handleChat(client, msg));
     this.onMessage('debugRequestHand', (client) => {
       client.send('error', { msg: '手牌只通过视图下发，这里没有额外信息可给。' });
@@ -292,7 +302,7 @@ export class DushiRoom extends Room {
       client.send('error', { msg: '人都到齐了，直接点准备就行。' });
       return;
     }
-    for (let s = 0; s < 4; s++) if (this.g.clients[s] === null) this.seatBot(s);
+    for (let s = 0; s < 4; s++) if (!this.g.occupied(s)) this.seatBot(s);
     this.g.state?.log.push(`房主叫了 ${empties} 个 AI 补位`);
     this.startRound();
   }
@@ -362,8 +372,8 @@ export class DushiRoom extends Room {
   }
 
   private clearTimers(): void {
-    for (const t of [this.declareTimer, this.botTimer, this.roundOverTimer]) if (t) clearTimeout(t);
-    this.declareTimer = this.botTimer = this.roundOverTimer = null;
+    for (const t of [this.declareTimer, this.botTimer]) if (t) clearTimeout(t);
+    this.declareTimer = this.botTimer = null;
   }
 
   /**
@@ -506,13 +516,53 @@ export class DushiRoom extends Room {
       client.send('error', { msg: '只有房主可以开始下一局。' });
       return;
     }
-    if (st.round >= ROUNDS) {
-      client.send('error', { msg: `已打完 ${ROUNDS} 局，本场结束。` });
+    if (this.g.matchOver) {
+      client.send('error', { msg: '本场已经结束了，想再来一场请开新房。' });
       return;
     }
     // 其他人需要重新 ready（AI 由 fillBots 设为已准备）
     this.g.ready = this.g.ready.map((_, s) => this.g.bots[s]);
     this.g.phase = 'waiting';
+    this.pushAll();
+  }
+
+  /**
+   * 房主改房规：只在**第一局开始前**允许。
+   * 开局后改规则会产生"这一局按哪套算"的扯皮，也会变成作弊面（打到一半调摆牌倍数）。
+   */
+  private handleSetRules(client: Client, msg: { rules?: unknown }): void {
+    const seat = this.seatOf(client);
+    if (seat === -1) return;
+    if (seat !== this.g.hostSeat) {
+      client.send('error', { msg: '只有房主能改房规。' });
+      return;
+    }
+    if (this.g.state !== null) {
+      client.send('error', { msg: '已经开局了，房规不能再改 —— 想换规则请开新房。' });
+      return;
+    }
+    const next = sanitizeRules(msg?.rules);
+    Object.assign(this.g.rules, next);
+    this.pushAll();
+  }
+
+  /** 无限赛制下房主喊停；其他赛制到线会自动结束，不需要这个 */
+  private handleEndMatch(client: Client): void {
+    const seat = this.seatOf(client);
+    if (seat === -1) return;
+    if (seat !== this.g.hostSeat) {
+      client.send('error', { msg: '只有房主能结束本场。' });
+      return;
+    }
+    if (this.g.matchOver) return;
+    // 一局进行中不给喊停：这一局的手牌、名次都还没结算，中途掐掉会留下半局数据
+    if (this.g.state && this.g.state.phase !== 'settling') {
+      client.send('error', { msg: '打完这一局才能结束本场。' });
+      return;
+    }
+    this.g.matchOver = true;
+    if (this.g.matchId !== null) endMatch(this.g.matchId);
+    this.g.state?.log.push('房主结束了本场');
     this.pushAll();
   }
 
@@ -533,9 +583,11 @@ export class DushiRoom extends Room {
     this.g.lastSettle = result;
     st.log.push(`结算：${result.reason}`);
     this.persistRound(result);
-    if (st.round >= ROUNDS) {
+    // 赛制到线 → 本场结束（局数打完 / 某家目标分到线）
+    if (!this.g.matchOver && matchOver(st.round, st.scores, this.g.rules)) {
+      this.g.matchOver = true;
       if (this.g.matchId !== null) endMatch(this.g.matchId);
-      this.roundOverTimer = setTimeout(() => this.pushAll(), 0);
+      st.log.push('本场结束');
     }
   }
 
