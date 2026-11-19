@@ -28,7 +28,7 @@ export interface SeatState {
   /** 身份是否已公开（打出过 ♠3 或 ♠A） */
   revealed: boolean;
   /**
-   * 是否是"出完手牌的那一手带着身份牌"（♠3 / ♠A）。
+   * 是否是"最后一张单出的牌是身份牌"（♠3 / ♠A）。
    * 规则：这种打法直接判最后一名，无论他是独食者还是队伍里的人 —— 见 §2.15。
    */
   identityLast: boolean;
@@ -275,7 +275,10 @@ const isIdentityCard = (c: Card): boolean => c.s === 'S' && (c.r === '3' || c.r 
  *
  * 这条规则的用意：♠3/♠A 本来是"暗队友"的凭据，谁把它捂到最后一张才甩出来，
  * 就等于把牌桌当成了信息战 —— 而且往往还能靠它（♠3 是最大的单张）抢到出完。
- * 所以不管他是独食者还是队伍里的人，出完的那一手带身份牌，一律挪到末位。
+ * 所以不管他是独食者还是队伍里的人，**最后一张单出的牌是身份牌**，一律挪到末位。
+ *
+ * v0.3.1 收紧：只有"单张收尾"才算。把 ♠3 当普通牌塞进同花/顺子/三带二里一起出掉，不算 ——
+ * 那本来就是"把身份牌早点打出去"的正解，不该罚。
  *
  * 多个玩家同时犯：按他们**出完的先后**占住末尾几个名次，先出完的排前面。
  * 这样 places 永远是 1..4 的排列，计分不会因此错位。
@@ -313,8 +316,8 @@ export function play(state: GameState, seat: number, cards: readonly Card[]): Pa
   state.log.push(`${me.name} 出 ${cards.map(cardLabel).join(' ')}（${patternName(pattern)}）`);
 
   if (me.hand.length === 0) {
-    // 出完的这一手带身份牌 → 结算时判最后一名（§2.15）
-    me.identityLast = cards.some(isIdentityCard);
+    // 只有"最后一张、单张出"的身份牌才算（§2.15）；夹在同花/顺子里一起出掉不算
+    me.identityLast = cards.length === 1 && isIdentityCard(cards[0]);
     me.place = state.places.length + 1;
     state.places.push(seat);
     state.log.push(

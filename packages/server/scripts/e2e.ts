@@ -470,7 +470,8 @@ async function main(): Promise<void> {
     await fail((e as Error).message);
     throw e;
   }
-  const aiPlayed = soloSettled.eventLog.some((l) => l.includes('🤖'));
+  // AI 座位名字带 "AI·"，日志里出现它的出牌行就说明托管真的动了（不再有 🤖 的独立标记行）
+  const aiPlayed = soloSettled.eventLog.some((l) => l.includes('AI·'));
   if (!aiPlayed) await fail('AI 没有出过牌');
   console.log(`✓ 单人局打完：AI 正常出牌，deltas=${JSON.stringify(soloSettled.settle!.deltas)}`);
 

@@ -50,14 +50,38 @@ test('对手报单：首出最大的单张堵门', () => {
   assert.deepEqual((a as { cards: Card[] }).cards.map(label), ['KH'], '宁可亮身份也不能放走报单的对手');
 });
 
-test('不拆对子去压小单张：没有干净牌就过', () => {
-  const st = makeState(['H10 H10', 'S9 C9 C4', 'H5 H6', 'D7 D8'], {
+test('手牌还多时不拆对子去压小单张：不划算就让过', () => {
+  const st = makeState(['H10 H10', 'S9 C9 H9 D9 SK CK SQ CQ', 'H5 H6', 'D7 D8'], {
     ...base,
     team: [0, 1],
     currentSeat: 1,
     trick: tr(2, 'H5'),
   });
-  assert.equal(chooseAction(st, 1).type, 'pass', '只有拆 9 对子才能压，那就不压');
+  assert.equal(chooseAction(st, 1).type, 'pass', '手里还有 8 张、对面只出了张小 5，留着对子');
+});
+
+test('残局（≤7 张）就不再死守组合：拆也要压', () => {
+  const st = makeState(['H10 H10', 'S9 C9 H9 D9 SK CK', 'H5 H6', 'D7 D8'], {
+    ...base,
+    team: [0, 1],
+    currentSeat: 1,
+    trick: tr(2, 'H5'),
+  });
+  const a = chooseAction(st, 1);
+  assert.equal(a.type, 'play', '只剩 6 张，牌权比结构值钱');
+  assert.equal((a as { cards: Card[] }).cards.length, 1);
+  assert.equal((a as { cards: Card[] }).cards[0].r, '9', '拆一张 9 去压（四张 9 里最小的那张）');
+});
+
+test('对面已经压到 K，宁可拆对子也要抢回来', () => {
+  const st = makeState(['H10 H10', 'S9 C9 H9 D9 SK CK SQ CQ', 'HK', 'D7 D8'], {
+    ...base,
+    team: [0, 1],
+    currentSeat: 1,
+    trick: tr(2, 'HK'),
+  });
+  const a = chooseAction(st, 1);
+  assert.equal(a.type, 'play', 'K 这手放过去基本等于白送一圈');
 });
 
 test('但对手报单时，该拆也得拆', () => {

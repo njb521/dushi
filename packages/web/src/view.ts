@@ -20,7 +20,7 @@ export interface SeatView {
   career: number | null;
   /** 单人模式里的 AI 对手 */
   bot: boolean;
-  /** 出完时身份牌留到最后（判最后一名） */
+  /** 最后一张单出的牌是身份牌（判最后一名） */
   identityLast: boolean;
 }
 

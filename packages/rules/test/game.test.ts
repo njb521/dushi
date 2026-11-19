@@ -122,8 +122,8 @@ test('完整对局可以打完（多个种子）', () => {
   }
 });
 
-// ── 身份牌留到最后（v0.3 新规 §2.15）─────────────────────
-// 出完手牌的那一手带 ♠3 / ♠A → 直接判最后一名，不论独食者还是队伍成员。
+// ── 身份牌留到最后（§2.15，v0.3.1 收紧）──────────────────
+// 只有"最后一张、单张出"的身份牌才算；夹进同花/顺子/三带二里一起出掉不算。
 
 test('身份牌留到最后：独食者拿 ♠3 收尾 → 判四游，−12', () => {
   const st = makeState(['S3', 'HK', 'HQ', 'HJ'], {
@@ -158,7 +158,7 @@ test('身份牌留到最后：队伍里的人一样判最后，连带把队伍�
   assert.deepEqual(r.deltas, [0, 0, 0, 0]);
 });
 
-test('身份牌留到最后：出完那一手是多张带 ♠3 也算', () => {
+test('身份牌夹进同花一起出掉：不算判末位（v0.3.1）', () => {
   const st = makeState(['S3 S5 S7 S9 SJ', 'HK', 'HQ', 'HJ'], {
     soloSeat: 0,
     requireD4: false,
@@ -167,7 +167,39 @@ test('身份牌留到最后：出完那一手是多张带 ♠3 也算', () => {
   const combo = parseHand('S3 S5 S7 S9 SJ');
   assert.equal(validatePlay(st, 0, combo).ok, true, '♠3 可以进同花');
   play(st, 0, combo);
+  assert.equal(st.seats[0].identityLast, false, '整手出掉不算"留到最后一张"');
+  assert.deepEqual(st.places, [0, 1, 2, 3], '照常算头游');
+  assert.equal(settle(st).reason, '独食头游');
+});
+
+test('身份牌当对子、塞进三带二一起出掉：不算判末位', () => {
+  const st = makeState(['S3 H3 H5 H5 H5', 'HK', 'HQ', 'HJ'], {
+    soloSeat: 0,
+    requireD4: false,
+    firstPlayDone: true,
+  });
+  const combo = parseHand('S3 H3 H5 H5 H5');
+  assert.equal(validatePlay(st, 0, combo).ok, true, '三带二合法');
+  play(st, 0, combo);
+  assert.equal(st.seats[0].identityLast, false);
+  assert.deepEqual(st.places, [0, 1, 2, 3]);
+});
+
+test('先出掉别的牌、最后一张是 ♠3：仍然判末位', () => {
+  const st = makeState(['S3 HK', 'HQ', 'HJ', 'H10'], {
+    soloSeat: 0,
+    requireD4: false,
+    firstPlayDone: true,
+  });
+  play(st, 0, parseHand('HK')); // 先出 K，把 ♠3 留成最后一张
+  pass(st, 1);
+  pass(st, 2);
+  pass(st, 3);
+  play(st, 0, parseHand('S3')); // 单张收尾
+  assert.equal(st.seats[0].identityLast, true);
+  assert.equal(st.phase, 'settling');
   assert.deepEqual(st.places, [1, 2, 3, 0]);
+  assert.equal(settle(st).reason, '独食四游');
 });
 
 test('最后一张不是身份牌：名次照常', () => {

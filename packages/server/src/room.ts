@@ -164,7 +164,7 @@ export class GameRuntime {
       `顺子 4-8..10-A（2、3 不入顺）`,
       `同花只比花色`,
       `独食：头游+12 二游-6 三四游-12`,
-      `身份牌留最后=判末位`,
+      `身份牌单张收尾=判末位`,
       r.leadMustContainDiamond4 ? `首出必须含 ♦4` : null,
       `赛制：${mode}`,
     ]
@@ -657,15 +657,22 @@ export class DushiRoom extends Room {
       this.botTimer = null;
       const s = this.g.state;
       if (!s || s.phase !== 'playing' || s.currentSeat !== seat || this.g.clients[seat]) return;
-      const tag = isAi ? '🤖' : '⏳';
+      // 规则引擎已经写了一条"某某 出 ♣4（单张）"，这里**只补标记、不再写第二行**：
+      // 记录面板只显示最后 12 条，一行动作占两行会把前面的信息挤掉一半。
+      // AI 座位名字本身带 "AI·"，不用额外标；需要标的是"人类掉线、由托管代打"。
+      const mark = (from: number): void => {
+        if (isAi) return;
+        if (s.log.length > from) s.log[from] += '（托管）';
+      };
       const action = chooseAction(s, seat);
+      const from = s.log.length;
       if (action.type === 'play') {
         play(s, seat, action.cards);
-        s.log.push(`${tag} ${this.g.seatNames[seat]} 出牌`);
+        mark(from);
         if (s.phase === 'settling') this.doSettle();
       } else {
         pass(s, seat);
-        s.log.push(`${tag} ${this.g.seatNames[seat]} 不出`);
+        mark(from);
       }
       this.pushAll();
       this.scheduleBotIfNeeded();
