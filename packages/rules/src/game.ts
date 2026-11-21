@@ -183,6 +183,51 @@ function explainInvalid(cards: readonly Card[]): string {
   return '牌型不合法';
 }
 
+/**
+ * 判一手牌能不能打时，前端能拿到的全部上下文（不含他人手牌，也不含 GameState）。
+ */
+export interface PlayContext {
+  readonly hand: readonly Card[];
+  readonly trick: Trick | null;
+  /** 本规则下三张只能剩 3 张时出 */
+  readonly tripsOnlyWhenThreeLeft: boolean;
+  /** 首出是否还必须带 ♦4（本局已经打过首出就是 false） */
+  readonly requireD4: boolean;
+}
+
+/**
+ * 只判"这手牌能不能打"，不判"轮到谁、是不是你的牌" —— **前后端共用同一个实现**。
+ *
+ * 前端要即时提示"为什么出不了"，就必须能在本地跑一遍判定；但本地绝不能有第二套逻辑，
+ * 否则会出现"按钮亮着、点了被拒"这种比不校验更糟的体验。所以：
+ * 客户端用这个函数 + 自己视图里的手牌/桌面，服务端用 validatePlay（它只是加了两条前置检查
+ * 再调用本函数）。两边判出来的 ok 与 reason 完全一致，有 property test 盯着。
+ */
+export function judgePlay(ctx: PlayContext, cards: readonly Card[]): Validation {
+  if (cards.length === 0) return fail('没有选牌');
+
+  const pattern = classify(cards);
+  if (!pattern) return fail(explainInvalid(cards));
+
+  if (ctx.tripsOnlyWhenThreeLeft && pattern.cat === 'trips' && ctx.hand.length !== 3) {
+    return fail('本规则下三张只能在剩 3 张时打出');
+  }
+
+  if (ctx.trick === null) {
+    if (ctx.requireD4 && !cards.some((c) => c.s === 'D' && c.r === '4')) {
+      return fail('首出必须包含 ♦4');
+    }
+  } else {
+    if (pattern.len !== ctx.trick.pattern.len) {
+      return fail(`必须出 ${ctx.trick.pattern.len} 张`);
+    }
+    if (!beats(pattern, ctx.trick.pattern)) {
+      return fail(`压不过上一手（${patternName(ctx.trick.pattern)}）`);
+    }
+  }
+  return { ok: true, pattern };
+}
+
 export function validatePlay(state: GameState, seat: number, cards: readonly Card[]): Validation {
   if (state.phase !== 'playing') return fail('当前不是出牌阶段');
   if (state.currentSeat !== seat) return fail('还没轮到你出牌');
@@ -191,26 +236,15 @@ export function validatePlay(state: GameState, seat: number, cards: readonly Car
   const me = state.seats[seat];
   if (!handContainsAll(me.hand, cards)) return fail('手牌里没有这些牌');
 
-  const pattern = classify(cards);
-  if (!pattern) return fail(explainInvalid(cards));
-
-  if (state.rules.tripsOnlyWhenThreeLeft && pattern.cat === 'trips' && me.hand.length !== 3) {
-    return fail('本规则下三张只能在剩 3 张时打出');
-  }
-
-  if (state.trick === null) {
-    if (!state.firstPlayDone && state.requireD4 && !cards.some((c) => c.s === 'D' && c.r === '4')) {
-      return fail('首出必须包含 ♦4');
-    }
-  } else {
-    if (pattern.len !== state.trick.pattern.len) {
-      return fail(`必须出 ${state.trick.pattern.len} 张`);
-    }
-    if (!beats(pattern, state.trick.pattern)) {
-      return fail(`压不过上一手（${patternName(state.trick.pattern)}）`);
-    }
-  }
-  return { ok: true, pattern };
+  return judgePlay(
+    {
+      hand: me.hand,
+      trick: state.trick,
+      tripsOnlyWhenThreeLeft: state.rules.tripsOnlyWhenThreeLeft,
+      requireD4: !state.firstPlayDone && state.requireD4,
+    },
+    cards,
+  );
 }
 
 export function canPass(state: GameState, seat: number): boolean {

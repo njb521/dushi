@@ -33,6 +33,16 @@ export interface SettleInfo {
   baiPai: boolean;
 }
 
+/** 服务端下发的公开动作（与服务端 room.ts 的 ActionEvent 对齐） */
+export interface ActionEvent {
+  seq: number;
+  type: 'play' | 'pass' | 'reveal' | 'declare' | 'settle';
+  seat?: number;
+  cards?: Card[];
+  cat?: string;
+  choice?: 'baiPai' | 'surrender' | 'none';
+}
+
 export interface View {
   phase: Phase;
   you: number;
@@ -52,6 +62,8 @@ export interface View {
   canPass: boolean;
   settle: SettleInfo | null;
   eventLog: string[];
+  /** 公开动作流水：前端只播 seq 比上次大的那些 */
+  events: ActionEvent[];
   rulesNote: string;
   /** 单人练习房 */
   practice: boolean;

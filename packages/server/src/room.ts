@@ -33,6 +33,8 @@ import {
   applyScores,
   validatePlay,
   matchOver,
+  classify,
+  patternName,
 } from '@dushi/rules';
 import { buildView } from './views.ts';
 import { publicRules, rulesSummary, sanitizeRules } from './rules-options.ts';
@@ -49,6 +51,28 @@ const AI_DELAY_MS = 800;
 /** 断线后座位保留多久（秒） */
 const RECONNECT_SEC = 60;
 const AI_NAMES = ['AI·阿良', 'AI·小陈', 'AI·老王'];
+
+/**
+ * 给前端放动画 / 音效用的"公开动作"。
+ *
+ * 为什么不用现有的 `state.log`：那是中文成句，驱动不了动画（分不清"出牌"和"不出"，
+ * 也拿不到牌面）。这里只装公开信息 —— 谁出了哪几张、谁不出、谁亮了身份，**不含任何手牌**。
+ *
+ * `seq` 单调递增且**跨局不清零**：前端只播 `seq > 上次看到的`，于是刷新/重连拿到整份列表时
+ * 游标直接跳到最新，不会把历史动作重播一遍。
+ */
+export interface ActionEvent {
+  readonly seq: number;
+  readonly type: 'play' | 'pass' | 'reveal' | 'declare' | 'settle';
+  /** 动作发起者；settle 没有 */
+  readonly seat?: number;
+  /** 仅 play / reveal */
+  readonly cards?: Card[];
+  /** 牌型名，如"三带二" */
+  readonly cat?: string;
+  /** 仅 declare：摆牌 / 投降（"不表态"也记一条，但不带任何身份信息） */
+  readonly choice?: 'baiPai' | 'surrender' | 'none';
+}
 
 export interface PlayMsg {
   cards: string[];
@@ -91,6 +115,10 @@ export class GameRuntime {
   phase: 'waiting' | 'ingame' = 'waiting';
   /** 本场是否已结束（赛制到线 / 房主喊停） */
   matchOver = false;
+  /** 公开动作流水号（跨局不清零，前端靠它去重） */
+  eventSeq = 0;
+  /** 最近 20 条公开动作（只给动画/音效用，别拿它当业务真值） */
+  events: ActionEvent[] = [];
   hostSeat = 0;
 
   constructor(
@@ -103,6 +131,12 @@ export class GameRuntime {
     this.rules = rules;
     this.practice = practice;
     this.aiFill = aiFill;
+  }
+
+  /** 记一条公开动作。超过 20 条就丢掉最旧的：前端只关心"刚刚发生了什么" */
+  emit(e: Omit<ActionEvent, 'seq'>): void {
+    this.events.push({ seq: ++this.eventSeq, ...e });
+    if (this.events.length > 20) this.events.shift();
   }
 
   clientSlots(): (Client | null)[] {
@@ -459,12 +493,29 @@ export class DushiRoom extends Room {
     if (msg?.choice !== 'none' && msg?.choice !== 'baiPai' && msg?.choice !== 'surrender') return;
     if (this.declareTimer) clearTimeout(this.declareTimer);
     declare(st, msg.choice);
+    if (msg.choice !== 'none') this.g.emit({ type: 'declare', seat, choice: msg.choice });
     if (st.phase === 'settling') {
       this.doSettle();
     } else {
       this.scheduleBotIfNeeded();
     }
     this.pushAll();
+  }
+
+  /**
+   * 落一手牌，并把公开事件记进 `events`（含"亮身份"的连带事件）。
+   * 人类出牌、托管出牌都走这里 —— 动画和音效只有这一个触发源，才不会漏也不会重复。
+   */
+  private applyPlay(seat: number, cards: readonly Card[]): void {
+    const st = this.g.state!;
+    const before = st.seats.map((x) => x.revealed);
+    const pattern = play(st, seat, cards);
+    this.g.emit({ type: 'play', seat, cards: [...cards], cat: patternName(pattern) });
+    // 这一手里打出了 ♠3 / ♠A → 该座位身份亮出，单独记一条，前端用来放"亮牌"特效
+    const ids = cards.filter((c) => c.s === 'S' && (c.r === '3' || c.r === 'A'));
+    st.seats.forEach((x, i) => {
+      if (x.revealed && !before[i]) this.g.emit({ type: 'reveal', seat: i, cards: ids });
+    });
   }
 
   private handlePlay(client: Client, msg: PlayMsg): void {
@@ -486,7 +537,7 @@ export class DushiRoom extends Room {
       client.send('error', { msg: v.reason ?? '非法出牌' });
       return;
     }
-    play(st, seat, cards);
+    this.applyPlay(seat, cards);
     if (st.phase === 'settling') {
       this.doSettle();
     } else {
@@ -501,6 +552,7 @@ export class DushiRoom extends Room {
     if (!st || st.phase !== 'playing' || seat === -1) return;
     try {
       pass(st, seat);
+      this.g.emit({ type: 'pass', seat });
     } catch (e) {
       client.send('error', { msg: (e as Error).message });
       return;
@@ -578,6 +630,7 @@ export class DushiRoom extends Room {
 
   private doSettle(): void {
     const st = this.g.state!;
+    this.g.emit({ type: 'settle' });
     const result = settle(st);
     applyScores(st, result.deltas);
     this.g.lastSettle = result;
@@ -667,11 +720,12 @@ export class DushiRoom extends Room {
       const action = chooseAction(s, seat);
       const from = s.log.length;
       if (action.type === 'play') {
-        play(s, seat, action.cards);
+        this.applyPlay(seat, action.cards);
         mark(from);
         if (s.phase === 'settling') this.doSettle();
       } else {
         pass(s, seat);
+        this.g.emit({ type: 'pass', seat });
         mark(from);
       }
       this.pushAll();

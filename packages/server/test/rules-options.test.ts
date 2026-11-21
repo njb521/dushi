@@ -34,10 +34,9 @@ test('刷分向：摆牌倍数被夹到 1–3，传 1e9 也只能到 3', () => {
 });
 
 test('定稿项不可被客户端改写', () => {
-  const r = sanitizeRules({ leadMustContainDiamond4: false, declareWindowMs: 1, turnTimeoutMs: 1 });
+  const r = sanitizeRules({ leadMustContainDiamond4: false, declareWindowMs: 1 });
   assert.equal(r.leadMustContainDiamond4, true, '首出必须带 ♦4 是定稿项');
   assert.equal(r.declareWindowMs, DEFAULT_RULES.declareWindowMs);
-  assert.equal(r.turnTimeoutMs, DEFAULT_RULES.turnTimeoutMs);
 });
 
 test('未知键丢弃，不会混进 RuleSet', () => {

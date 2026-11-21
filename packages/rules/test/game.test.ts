@@ -1,9 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseHand } from '../src/cards.ts';
+import { deck, mulberry32, parseHand, shuffle } from '../src/cards.ts';
 import { classify } from '../src/pattern.ts';
 import { chooseAction } from '../src/ai.ts';
-import { createGame, declare, pass, play, settle, validatePlay } from '../src/game.ts';
+import { createGame, declare, judgePlay, pass, play, settle, validatePlay } from '../src/game.ts';
+import { DEFAULT_RULES } from '../src/rules.ts';
 import { makeFinished, makeState } from './helpers.ts';
 
 const sum = (a: readonly number[]) => a.reduce((x, y) => x + y, 0);
@@ -254,4 +255,65 @@ test('投降也留痕（本局直接结束，独食者身份已随结算公开�
   declare(st, 'surrender');
   assert.equal(st.phase, 'settling');
   assert.ok(st.log.some((l) => l.includes(st.seats[solo].name) && l.includes('投降')));
+});
+
+
+// ── judgePlay / validatePlay 一致性（前端即时提示的地基）──────────
+// 前端拿不到 GameState，只能用 judgePlay；服务端只用 validatePlay。
+// 两者一旦漂移，就会出现"按钮亮着、点下去被拒"——比不校验更糟，所以用随机输入盯着。
+
+test('judgePlay 与 validatePlay 判定完全一致（1 万组随机输入）', () => {
+  const rnd = mulberry32(20261118);
+  let rounds = 0;
+  let okCount = 0;
+
+  for (let i = 0; i < 10_000; i++) {
+    const cards = shuffle(deck(), rnd);
+    const hands = [0, 1, 2, 3].map((k) =>
+      cards.slice(k * 13, k * 13 + 13).map((c) => `${c.s}${c.r}`).join(' '),
+    );
+
+    // 随机造桌面：一半首出、一半跟上家的单张/对子
+    const roll = rnd();
+    let trick = null;
+    if (roll > 0.4) {
+      const from = Math.floor(rnd() * 4) * 13;
+      const donor = cards.slice(from, from + 13);
+      const pick = donor.slice(0, roll > 0.7 ? 2 : 1);
+      const pat = classify(pick);
+      if (pat) trick = { seat: Math.floor(rnd() * 4), pattern: pat, cards: pick };
+    }
+
+    const st = makeState(hands, {
+      currentSeat: 0,
+      trick,
+      requireD4: rnd() < 0.5,
+      firstPlayDone: trick !== null || rnd() < 0.5,
+      rules: { ...DEFAULT_RULES, tripsOnlyWhenThreeLeft: rnd() < 0.5 },
+    });
+
+    // 从自己的手牌里随机抓 0–6 张
+    const hand = st.seats[0].hand;
+    const n = Math.floor(rnd() * 7);
+    const picked = [...hand].sort(() => rnd() - 0.5).slice(0, n);
+
+    const a = judgePlay(
+      {
+        hand,
+        trick: st.trick,
+        tripsOnlyWhenThreeLeft: st.rules.tripsOnlyWhenThreeLeft,
+        requireD4: !st.firstPlayDone && st.requireD4,
+      },
+      picked,
+    );
+    const b = validatePlay(st, 0, picked);
+
+    assert.equal(a.ok, b.ok, `第 ${i} 组 ok 不一致：judge=${a.reason} server=${b.reason}`);
+    assert.equal(a.reason, b.reason, `第 ${i} 组 reason 不一致`);
+    rounds++;
+    if (a.ok) okCount++;
+  }
+
+  assert.equal(rounds, 10_000);
+  assert.ok(okCount > 500, `合法样本太少（${okCount}），说明随机输入没覆盖到能出牌的情况`);
 });

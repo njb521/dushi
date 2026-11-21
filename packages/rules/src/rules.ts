@@ -20,8 +20,6 @@ export interface RuleSet {
   readonly allowSurrender: boolean;
   /** 独食宣告倒计时（毫秒） */
   readonly declareWindowMs: number;
-  /** 出牌倒计时（毫秒） */
-  readonly turnTimeoutMs: number;
   /** 赛制 */
   readonly matchMode: MatchMode;
   /** 局数赛制：共几局 */
@@ -38,7 +36,6 @@ export const DEFAULT_RULES: RuleSet = {
   mustPlayWhenReporting: true,
   allowSurrender: true,
   declareWindowMs: 10_000,
-  turnTimeoutMs: 30_000,
   matchMode: 'rounds',
   rounds: 8,
   targetScore: 50,

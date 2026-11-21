@@ -10,7 +10,7 @@
 import type { Card, GameState } from '@dushi/rules';
 import { matchProgress, patternName } from '@dushi/rules';
 import type { MatchProgress } from '@dushi/rules';
-import type { GameRuntime } from './room.ts';
+import type { ActionEvent, GameRuntime } from './room.ts';
 import { publicRules, rulesSummary } from './rules-options.ts';
 import type { PublicRules } from './rules-options.ts';
 
@@ -65,6 +65,8 @@ export interface View {
     readonly baiPai: boolean;
   };
   readonly eventLog: readonly string[];
+  /** 公开动作流水（给动画/音效用；前端按 seq 游标消费，重连不重播） */
+  readonly events: readonly ActionEvent[];
   readonly rulesNote: string;
   /** 单人练习房 */
   readonly practice: boolean;
@@ -171,6 +173,7 @@ export function buildView(g: GameRuntime, seat: number): View {
         }
       : null,
     eventLog: st ? st.log.slice(-12) : [],
+    events: [...g.events],
     rulesNote: g.rulesNote(),
     practice: g.practice,
     hasAi: g.roundHasAi(),
